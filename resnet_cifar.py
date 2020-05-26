@@ -113,7 +113,7 @@ class ResNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
 		
         # hyperparameters
-        self.num_classes = parameters['NUM_CLASSES']
+        self.num_classes = num_classes
         self.num_epochs = parameters['NUM_EPOCHS']
         self.scheduler = parameters['SCHEDULER']
         self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
@@ -153,7 +153,7 @@ class ResNet(nn.Module):
 
         return x
 		
-    def train(self, train_dataloader, val_dataloader, state_dict=None, verbose=False, validation_step=5):
+    def perform_training(self, train_dataloader, val_dataloader=None, state_dict=None, verbose=False, validation_step=5):
         self = self.to(DEVICE)
         cudnn.benchmark
 
@@ -170,15 +170,17 @@ class ResNet(nn.Module):
             if verbose:
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
-                    loss.item() if len(epochs_stats) > 0 else -1,
+                    total_loss if len(epochs_stats) > 0 else -1,
                     scheduler.get_last_lr()
                 ))
-              
+
+            total_loss = 0.0
+            total_training = 0
             for images, labels in train_dataloader:
                 #images, labels = (images.to(DEVICE), labels.to(DEVICE))
                 images, labels = (images.to(DEVICE), F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float))
 
-                self.training = True
+                self.train()
 
                 # PyTorch, by default, accumulates gradients after each backward pass
                 # We need to manually set the gradients to zero before starting a new iteration
@@ -189,21 +191,24 @@ class ResNet(nn.Module):
 
                 # Compute loss based on output and ground truth
                 loss = self.criterion(outputs, labels)
+                total_loss += loss.item() * len(labels)
+                total_training += len(labels)
 
                 # Compute gradients for each layer and update weights
                 loss.backward()  # backward pass: computes gradients
                 optimizer.step() # update weights based on accumulated gradients
 
+            total_loss = total_loss/total_training
             epochs_stats[epoch] = {
-                'loss': loss.item(),
+                'loss': total_loss,
                 'learning_rate': scheduler.get_last_lr(),
                 'elapsed_time': time.time() - last_time
             }
             last_time = time.time()
 
             # Evaluate accuracy on validation set if verbose at each validation step
-            if verbose and (epoch + 1) % validation_step == 0:
-                accuracy, _ = self.test(val_dataloader)
+            if val_dataloader and verbose and (epoch + 1) % validation_step == 0:
+                accuracy, _ = self.perform_test(val_dataloader)
                 print(f'Epoch accuracy on validation set: {accuracy}')
 
             # Step the scheduler
@@ -211,11 +216,11 @@ class ResNet(nn.Module):
         
         return epochs_stats
       
-    def test(self, dataloader):
+    def perform_test(self, dataloader):
         self = self.to(DEVICE)
         
         with torch.no_grad():
-            self.training = False # Sets the module in evaluation mode
+            self.eval() # Sets the module in evaluation mode
 
             correct_predictions = 0
             total_predictions = 0
