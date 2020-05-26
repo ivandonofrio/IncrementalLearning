@@ -115,11 +115,11 @@ class ResNet(nn.Module):
         # hyperparameters
         self.num_classes = parameters['NUM_CLASSES']
         self.num_epochs = parameters['NUM_EPOCHS']
-        self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
-        
-        self.criterion = parameters['CRITERION']()
-        self.optimizer = parameters['OPTIMIZER'](self.parameters(), **parameters['OPTIMIZER_PARAMETERS'])
         self.scheduler = parameters['SCHEDULER']
+        self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
+        self.optimizer = parameters['OPTIMIZER']
+        self.optimizer_parameters = parameters['OPTIMIZER_PARAMETERS']
+        self.criterion = parameters['CRITERION']()
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -163,7 +163,7 @@ class ResNet(nn.Module):
         epochs_stats = {}
         last_time = time.time()
         
-        optimizer = self.optimizer
+        optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
         
         for epoch in range(self.num_epochs):
