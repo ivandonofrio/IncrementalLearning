@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.backends import cudnn
 import math
 import time
+from copy import deepcopy
 import torch.utils.model_zoo as model_zoo
 
 DEVICE = 'cuda'
@@ -92,7 +93,7 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, num_classes=10):
+    def __init__(self, block, layers, parameters, lwf, num_classes=10):
         self.inplanes = 16
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1,
@@ -120,6 +121,10 @@ class ResNet(nn.Module):
         self.optimizer = parameters['OPTIMIZER']
         self.optimizer_parameters = parameters['OPTIMIZER_PARAMETERS']
         self.criterion = parameters['CRITERION']()
+
+        self.lwf = lwf
+        self.iterations = 0
+        self.learned_classes = set()
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -156,9 +161,16 @@ class ResNet(nn.Module):
     def perform_training(self, train_dataloader, val_dataloader=None, state_dict=None, verbose=False, validation_step=5):
         self = self.to(DEVICE)
         cudnn.benchmark
+        current_classes = set()
 
         if state_dict:
             self.load_state_dict(state_dict)
+
+        # Store and freeze current network
+        if self.lwf:
+            old = deepcopy(self)
+            for p in old.parameters():
+                p.requires_grad = False
         
         epochs_stats = {}
         last_time = time.time()
@@ -177,8 +189,8 @@ class ResNet(nn.Module):
             total_loss = 0.0
             total_training = 0
             for images, labels in train_dataloader:
-                #images, labels = (images.to(DEVICE), labels.to(DEVICE))
-                images, labels = (images.to(DEVICE), F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float))
+                images = images.to(DEVICE)
+                target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
                 self.train()
 
@@ -189,10 +201,22 @@ class ResNet(nn.Module):
                 # Forward pass to the network
                 outputs = self.forward(images)
 
-                # Compute loss based on output and ground truth
-                loss = self.criterion(outputs, labels)
+                # Compute loss
+                if self.lwf and self.iterations > 0:
+                    # Store network outputs with pre-update parameters
+                    with torch.no_grad():
+                        old.eval()
+                        output_old = old(images).to(DEVICE)
+
+                    # Include old predictions for distillation
+                    target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+				
+                loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
+
+                # Store new classes
+                current_classes.update([l.item() for l in labels])
 
                 # Compute gradients for each layer and update weights
                 loss.backward()  # backward pass: computes gradients
@@ -213,6 +237,10 @@ class ResNet(nn.Module):
 
             # Step the scheduler
             scheduler.step()
+
+		# Update learned classes
+        self.learned_classes.update(current_classes)
+        self.iterations += 1
         
         return epochs_stats
       
@@ -250,17 +278,17 @@ class ResNet(nn.Module):
 
         return accuracy, prediction_history
 
-def resnet20(parameters, pretrained=False, **kwargs):
+def resnet20(parameters, pretrained=False, lwf=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, **kwargs):
+def resnet32(parameters, pretrained=False, lwf=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, **kwargs):
+def resnet56(parameters, pretrained=False, lwf=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, **kwargs)
     return model
