@@ -1,12 +1,14 @@
+import math
+import time
+import random
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.backends import cudnn
-import math
-import time
-from copy import deepcopy
 import torch.utils.model_zoo as model_zoo
+from torch.backends import cudnn
 
 DEVICE = 'cuda'
 
@@ -93,7 +95,7 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, num_classes=10):
+    def __init__(self, block, layers, parameters, lwf, num_classes=10, k=5000):
         self.inplanes = 16
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1,
@@ -122,9 +124,15 @@ class ResNet(nn.Module):
         self.optimizer_parameters = parameters['OPTIMIZER_PARAMETERS']
         self.criterion = parameters['CRITERION']()
 
+        # Set utils structures
         self.lwf = lwf
         self.iterations = 0
         self.learned_classes = set()
+        self.k = k
+        self.processed_images = 0
+
+        # Exemplars structure
+        self.exemplars = {}
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -158,7 +166,8 @@ class ResNet(nn.Module):
 
         return x
 		
-    def perform_training(self, train_dataloader, val_dataloader=None, state_dict=None, verbose=False, validation_step=5):
+    def perform_training(self, train_dataloader, val_dataloader=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10):
+
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
@@ -177,6 +186,9 @@ class ResNet(nn.Module):
         
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
+
+        training_images = []
+        training_classes = []
         
         for epoch in range(self.num_epochs):
             if verbose:
@@ -215,7 +227,11 @@ class ResNet(nn.Module):
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
-                # Store new classes
+                # Store new classes and images
+                c = [l.item() for l in labels]
+
+                training_images += [image.data for image in images]
+                training_classes += c
                 current_classes.update([l.item() for l in labels])
 
                 # Compute gradients for each layer and update weights
@@ -241,6 +257,9 @@ class ResNet(nn.Module):
 		# Update learned classes
         self.learned_classes.update(current_classes)
         self.iterations += 1
+
+        # Store exemplars
+        self.store_exemplars(training_classes, training_images)
         
         return epochs_stats
       
@@ -277,6 +296,32 @@ class ResNet(nn.Module):
         accuracy = correct_predictions / float(total_predictions)
 
         return accuracy, prediction_history
+
+    def store_exemplars(self, classes, images):
+
+        # Handle dimensions 
+        incoming_data = list(zip(images, classes))
+        self.processed_images += len(incoming_data)
+
+        bound = counter = min(self.k, self.processed_images)
+        batch = round(bound/len(self.learned_classes))
+
+        for image, label in incoming_data:
+
+            if label not in self.exemplars:
+                self.exemplars[label] = {
+                    'mean': None,
+                    'exemplars': []
+                }
+
+            self.exemplars[label].exemplars.append(image)
+
+        for label in self.exemplars.keys():
+
+            self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, count))
+            self.exemplars[label]['mean'] = torch.mean(torch.stack(self.exemplars[label]['exemplars']), 0, keepdim=True)
+            counter -= batch
+
 
 def resnet20(parameters, pretrained=False, lwf=False, **kwargs):
     n = 3
