@@ -2,26 +2,23 @@ import math
 import time
 import torch
 import numpy as np
-from resnet_cifar import resnet32
-import F
+from .resnet_cifar import resnet32
+import torch.nn.functional as F
 from copy import deepcopy
 
 class iCaRL():
-    def __init__(self, optimizer, scheduler, batch_size = 256, K = 20000):
+    def __init__(self, parameters, K = 20000):
         """
         :param K: total maximum number of exemplars (among all classes)
         """
 
-        self.net = resnet32()
+        self.net = resnet32(parameters, lwf=False)
         
         self.num_observed_classes = 0
         self.exemplars = [] # list of classes, each one with a list of exemplars images for that class
         self.max_tot_exemplars = K
-        self.batch_size = batch_size
 
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.criterion = torch.nn.BCEWithLogitsLoss()
+        self.parameters = parameters
 
     def classify(self, loader, DEVICE='cuda'):
         self = self.net.to(DEVICE)
@@ -46,7 +43,7 @@ class iCaRL():
         """
         num_new_classes = self._get_new_classes_number(loader)
         
-        update_representation(loader)
+        self.update_representation(loader)
         m = int(self.K / (self.num_observed_classes + num_new_classes))
 
         # Remove exemplars from previous learned classes
@@ -78,19 +75,22 @@ class iCaRL():
         """
         # form combined training set
         # D = new_images UNION exemplars
-        num_classes_after_increment = num_observed_classes + self._get_new_classes_number(loader)
+        num_classes_after_increment = self.num_observed_classes + self._get_new_classes_number(loader)
 
+        optimizer = self.parameters['OPTIMIZER'](self.net.parameters(), **self.parameters['OPTIMIZER_PARAMETERS'])
+        scheduler = self.parameters['SCHEDULER'](optimizer, **self.parameters['SCHEDULER_PARAMETERS'])
+        criterion = self.parameters['CRITERION']()
 
         num_current_exemplars = len(self.exemplars)
         total_loss = np.nan
-        scheduler = self.scheduler
-        old_net = deepcopy(self.net)
+        old_net = deepcopy(self.net.to(device))
+        self.net = self.net.to(device)
 
         # run network training (e.g. BackProp) with loss function
-        for epoch in range(self.num_epochs):
+        for epoch in range(self.parameters['NUM_EPOCHS']):
             if verbose:
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
-                    epoch+1, self.num_epochs,
+                    epoch+1, self.parameters['NUM_EPOCHS'],
                     total_loss,
                     scheduler.get_last_lr()
                 ))
@@ -99,25 +99,24 @@ class iCaRL():
             total_loss = 0.0
             total_training = 0
             for images, labels in loader:
-                #images, labels = (images.to(device), labels.to(device))
-                images, labels = (images.to(device), F.one_hot(labels, num_classes=self.num_classes).to(device, dtype=torch.float))
-
-                self.train()
+                images, labels = (images.to(device), labels.to(device, dtype=torch.float))
+                self.net.train()
 
                 # PyTorch, by default, accumulates gradients after each backward pass
                 # We need to manually set the gradients to zero before starting a new iteration
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
 
                 # Forward pass to the network
-                output = self.forward(images)
-
+                output = self.net.forward(images)
                 
-                # Output that would have gave the network before incrementing with new classes
-                output_old = F.sigmoid(old_net(images))[:,:self.num_observed_classes]
-                labels_onehot_new = F.one_hot(labels, num_classes_after_increment)
-                target = torch.cat((output_old, labels_onehot_new), dim=1)
+                # If this is not the first batch of classes (so I've already learned something)
+                if self.num_observed_classes > 0:
+                    # Output that would have gave the network before incrementing with new classes
+                    output_old = F.sigmoid(old_net(images))[:,:self.num_observed_classes]
+                    labels_onehot_new = F.one_hot(labels, num_classes_after_increment)
+                    labels = torch.cat((output_old, labels_onehot_new), dim=1)
 
-                loss = self.criterion(output, target)
+                loss = criterion(output, labels)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
@@ -144,6 +143,7 @@ class iCaRL():
     def _get_new_classes_number(self, loader):
         labels = []
         for i, l in loader:
-            labels += [l]
+            labels.append(l.tolist())
         unique_labels = np.unique(labels)
+
         return len(unique_labels)
