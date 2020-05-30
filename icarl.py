@@ -1,15 +1,17 @@
 import math
+import time
 import torch
 import numpy as np
 from resnet_cifar import resnet32
+import F
+from copy import deepcopy
 
-
-class iCaRL(ResNet):
-    def __init__(self, optimizer, batch_size = 256, K = 20000):
+class iCaRL():
+    def __init__(self, optimizer, scheduler, batch_size = 256, K = 20000):
         """
         :param K: total maximum number of exemplars (among all classes)
         """
-        
+
         self.net = resnet32()
         
         self.num_observed_classes = 0
@@ -18,6 +20,7 @@ class iCaRL(ResNet):
         self.batch_size = batch_size
 
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
     def classify(self, loader, DEVICE='cuda'):
@@ -66,38 +69,38 @@ class iCaRL(ResNet):
         max_num_exemplars_this_class = math.min(len(exemplars), m)
         return exemplars[:max_num_exemplars_this_class]
 
-    # TODO: do update_representation
-    def update_representation(self, loader, verbose=False, DEVICE='cuda'):
+    def update_representation(self, loader, val_dataloader=None, verbose=False, device='cuda'):
         """
-        :param X: new data
+        :param loader: new data loader
+        :param val_dataloader: compute accuracy on data from this dataloader
+        :param verbose:
+        :param device: 'cuda' (gpu) or 'cpu'
         """
         # form combined training set
         # D = new_images UNION exemplars
-        num_current_exemplars = len(self.exemplars)
-        
-        # store network outputs with pre-update parameters:
-        for i, images, labels in loader:
-            images = images.to(DEVICE)
-            i = i.to(DEVICE)
+        num_classes_after_increment = num_observed_classes + self._get_new_classes_number(loader)
 
-            output = self.net.forward(images)
-            q[i] = g(output).data
-        
+
+        num_current_exemplars = len(self.exemplars)
+        total_loss = np.nan
+        scheduler = self.scheduler
+        old_net = deepcopy(self.net)
 
         # run network training (e.g. BackProp) with loss function
         for epoch in range(self.num_epochs):
             if verbose:
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
-                    total_loss if len(epochs_stats) > 0 else -1,
+                    total_loss,
                     scheduler.get_last_lr()
                 ))
 
+            start_training_time = time.time()
             total_loss = 0.0
             total_training = 0
             for images, labels in loader:
-                #images, labels = (images.to(DEVICE), labels.to(DEVICE))
-                images, labels = (images.to(DEVICE), F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float))
+                #images, labels = (images.to(device), labels.to(device))
+                images, labels = (images.to(device), F.one_hot(labels, num_classes=self.num_classes).to(device, dtype=torch.float))
 
                 self.train()
 
@@ -106,10 +109,15 @@ class iCaRL(ResNet):
                 self.optimizer.zero_grad()
 
                 # Forward pass to the network
-                outputs = self.forward(images)
+                output = self.forward(images)
 
-                # Compute loss based on output and ground truth
-                loss = self.criterion(outputs, labels)
+                
+                # Output that would have gave the network before incrementing with new classes
+                output_old = F.sigmoid(old_net(images))[:,:self.num_observed_classes]
+                labels_onehot_new = F.one_hot(labels, num_classes_after_increment)
+                target = torch.cat((output_old, labels_onehot_new), dim=1)
+
+                loss = self.criterion(output, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
@@ -117,25 +125,21 @@ class iCaRL(ResNet):
                 loss.backward()  # backward pass: computes gradients
                 optimizer.step() # update weights based on accumulated gradients
 
-            total_loss = total_loss/total_training
+            total_loss = total_loss / total_training
             epochs_stats[epoch] = {
                 'loss': total_loss,
                 'learning_rate': scheduler.get_last_lr(),
-                'elapsed_time': time.time() - last_time
+                'elapsed_time': time.time() - start_training_time
             }
             last_time = time.time()
 
             # Evaluate accuracy on validation set if verbose at each validation step
-            if val_dataloader and verbose and (epoch + 1) % validation_step == 0:
+            if val_dataloader is not None:
                 accuracy, _ = self.perform_test(val_dataloader)
                 print(f'Epoch accuracy on validation set: {accuracy}')
 
             # Step the scheduler
             scheduler.step()
-
-
-    def g(self, x):
-        return F.sigmoid(x)
     
     def _get_new_classes_number(self, loader):
         labels = []
