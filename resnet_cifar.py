@@ -329,7 +329,7 @@ class ResNet(nn.Module):
             print(self.exemplars[label]['mean'])
 
             # Store only m exemplars
-            self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, count))
+            self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
             print(self.exemplars[label]['exemplars'][0])
 
             counter -= batch
