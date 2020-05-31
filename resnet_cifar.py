@@ -232,12 +232,16 @@ class ResNet(nn.Module):
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
-                # Store new classes and images
-                c = [l.cpu().item() for l in labels]
+                if epoch == 0:
+                    with torch.no_grad():
+                        # Store new classes and images
+                        # c = [l.cpu().item() for l in labels]
+                        c = [l.item() for l in labels]
 
-                training_images += [image.cpu().data for image in images]
-                training_classes += c
-                current_classes.update(c)
+                        # training_images += [image.cpu().data for image in images]
+                        training_images += [image.data for image in images]
+                        training_classes += c
+                        current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
                 loss.backward()  # backward pass: computes gradients
@@ -259,13 +263,16 @@ class ResNet(nn.Module):
             # Step the scheduler
             scheduler.step()
 
-		# Update learned classes
-        self.learned_classes.update(current_classes)
-        self.iterations += 1
+		    # Update learned classes
+        with torch.no_grad():
+            self.learned_classes.update(current_classes)
+            self.iterations += 1
 
-        # Store exemplars
-        self = self.to('cpu')
-        self.store_exemplars(training_classes, training_images)
+            # Store exemplars
+            # self = self.to('cpu')
+            # print(f'Received {len(train_dataloader.dataset)} images')
+            # print(f'Sending {len(training_images)} for exemplars...')
+            self.store_exemplars(training_classes, training_images)
         
         return epochs_stats
       
@@ -304,41 +311,49 @@ class ResNet(nn.Module):
         return accuracy, prediction_history
 
     def store_exemplars(self, classes, images):
+        self.eval()
+        exemplars_dataset = []
+        with torch.no_grad():
+            # Handle dimensions
+            # print('Storing exemplars...')
+            incoming_data = list(zip(images, classes))
+            self.processed_images += len(incoming_data)
 
-        # Handle dimensions
-        incoming_data = list(zip(images, classes))
-        self.processed_images += len(incoming_data)
+            bound = counter = min(self.k, self.processed_images)
+            # batch = round(bound/len(self.learned_classes))
+            batch = bound // len(self.learned_classes)
 
-        bound = counter = min(self.k, self.processed_images)
-        batch = round(bound/len(self.learned_classes))
+            for image, label in incoming_data:
 
-        for image, label in incoming_data:
+                if label not in self.exemplars:
+                    self.exemplars[label] = {
+                        'mean': None,
+                        'exemplars': []
+                    }
 
-            if label not in self.exemplars:
-                self.exemplars[label] = {
-                    'mean': None,
-                    'exemplars': []
-                }
+                self.exemplars[label]['exemplars'].append(image)
 
-            self.exemplars[label]['exemplars'].append(image)
+            for label in self.exemplars.keys():
 
-        for label in self.exemplars.keys():
+                # Using all images store mean
+                features = self.get_mean_representation(self.exemplars[label]['exemplars'])
+                self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
 
-            # Using all images store mean
-            features = self.get_mean_representation(self.exemplars[label]['exemplars'])
-            self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
+                # Store only m exemplars
+                # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, take {min(batch, counter)}\t(batch={batch}, counter={counter})')
+                self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
+                exemplars_dataset += [(image, label) for image in self.exemplars[label]['exemplars']]
 
-            # Store only m exemplars
-            self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-
-            counter -= batch
+                counter -= batch
 
     def get_mean_representation(self, exemplars):
 
         self.train(False)
+        # print('Getting mean representation...')
 
         # Extract maps from network
-        maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
+        with torch.no_grad():
+            maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
 
         return maps
 
