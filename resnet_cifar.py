@@ -339,7 +339,7 @@ class ResNet(nn.Module):
         self.train(False)
 
         # Extract maps from network
-        maps = [self.forward(torch.stack([exemplar]), get_only_features=True) for exemplar in exemplars]
+        maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True) for exemplar in exemplars]
 
         return maps
 
