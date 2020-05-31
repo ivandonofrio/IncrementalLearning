@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import torch.utils.model_zoo as model_zoo
 from torch.backends import cudnn
 
@@ -95,8 +95,14 @@ class Bottleneck(nn.Module):
         return out
 
 
-class ExtDataSet:
+class LabelledDataset(Dataset):
+    '''Custom dataset for labelled images.
+
+    Arguments:
+        data (list of tuples (image, label)): list of labelled images
+    '''
     def __init__(self, data):
+        super(LabelledDataset).__init__()
         self.images = []
         self.labels = []
         for x in data:
@@ -131,7 +137,7 @@ class ResNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 		
-        # hyperparameters
+        # Hyperparameters
         self.num_classes = num_classes
         self.batch_size = parameters['BATCH_SIZE']
         self.num_epochs = parameters['NUM_EPOCHS']
@@ -215,8 +221,8 @@ class ResNet(nn.Module):
 
         dataset = train_dataset
         if self.use_exemplars:
-            # dataset = list(dataset) + self.exemplars_dataset
-            dataset = ExtDataSet(list(dataset) + self.exemplars_dataset)
+            # Merge new training image and exemplars
+            dataset = ConcatDataset([dataset, LabelledDataset(self.exemplars_dataset)])
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
         
@@ -298,7 +304,6 @@ class ResNet(nn.Module):
             
             # Store exemplars
             if self.use_exemplars:
-                # self = self.to('cpu')
                 # print(f'Received {len(train_dataset)} images')
                 # print(f'Sending {len(training_images)} for exemplars...')
                 self.store_exemplars(training_classes, training_images)
@@ -350,7 +355,6 @@ class ResNet(nn.Module):
             self.processed_images += len(incoming_data)
 
             bound = counter = min(self.k, self.processed_images)
-            # batch = round(bound/len(self.learned_classes))
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
