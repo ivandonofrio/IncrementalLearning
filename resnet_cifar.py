@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import DataLoader
 import torch.utils.model_zoo as model_zoo
 from torch.backends import cudnn
 
@@ -96,7 +97,7 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, num_classes=10, k=5000):
+    def __init__(self, block, layers, parameters, lwf, use_exemplars, num_classes=10, k=5000):
         self.inplanes = 16
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
@@ -117,6 +118,7 @@ class ResNet(nn.Module):
 		
         # hyperparameters
         self.num_classes = num_classes
+        self.batch_size = parameters['BATCH_SIZE']
         self.num_epochs = parameters['NUM_EPOCHS']
         self.scheduler = parameters['SCHEDULER']
         self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
@@ -126,6 +128,7 @@ class ResNet(nn.Module):
 
         # Set utils structures
         self.lwf = lwf
+        self.use_exemplars = use_exemplars
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
@@ -133,6 +136,7 @@ class ResNet(nn.Module):
 
         # Exemplars structure
         self.exemplars = {}
+        self.exemplars_dataset = []
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -171,8 +175,7 @@ class ResNet(nn.Module):
 
         return x
 		
-    def perform_training(self, train_dataloader, val_dataloader=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10):
-
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10):
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
@@ -194,6 +197,11 @@ class ResNet(nn.Module):
 
         training_images = []
         training_classes = []
+
+        dataset = train_dataset
+        if self.use_exemplars:
+            dataset = list(dataset) + self.exemplars_dataset
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=0)
         
         for epoch in range(self.num_epochs):
             if verbose:
@@ -205,7 +213,8 @@ class ResNet(nn.Module):
 
             total_loss = 0.0
             total_training = 0
-            for images, labels in train_dataloader:
+            # for images, labels in train_dataloader:
+            for images, labels in loader:
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
@@ -235,12 +244,18 @@ class ResNet(nn.Module):
                 if epoch == 0:
                     with torch.no_grad():
                         # Store new classes and images
-                        # c = [l.cpu().item() for l in labels]
                         c = [l.item() for l in labels]
 
-                        # training_images += [image.cpu().data for image in images]
-                        training_images += [image.data for image in images]
-                        training_classes += c
+                        if self.use_exemplars:
+                            # Don't store existing exemplars
+                            # training_images += [image.data.cpu() for image in images if image.data.cpu() not in [x[0] for x in self.exemplars_dataset]]
+                            for image in images:
+                                image = image.data.cpu()
+                                for x in self.exemplars_dataset:
+                                    if torch.allclose(image, x[0]):
+                                        break
+                                training_images.append(image)
+                            training_classes += [l for l in c if l not in self.exemplars.keys()]
                         current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
@@ -256,8 +271,8 @@ class ResNet(nn.Module):
             last_time = time.time()
 
             # Evaluate accuracy on validation set if verbose at each validation step
-            if val_dataloader and verbose and (epoch + 1) % validation_step == 0:
-                accuracy, _ = self.perform_test(val_dataloader)
+            if val_dataset and verbose and (epoch + 1) % validation_step == 0:
+                accuracy, _ = self.perform_test(val_dataset)
                 print(f'Epoch accuracy on validation set: {accuracy}')
 
             # Step the scheduler
@@ -269,18 +284,21 @@ class ResNet(nn.Module):
             self.iterations += 1
 
             # Store exemplars
-            # self = self.to('cpu')
-            # print(f'Received {len(train_dataloader.dataset)} images')
-            # print(f'Sending {len(training_images)} for exemplars...')
-            self.store_exemplars(training_classes, training_images)
+            if self.use_exemplars:
+                # self = self.to('cpu')
+                # print(f'Received {len(train_dataloader.dataset)} images')
+                # print(f'Sending {len(training_images)} for exemplars...')
+                self.store_exemplars(training_classes, training_images)
         
         return epochs_stats
       
-    def perform_test(self, dataloader):
+    def perform_test(self, dataset):
         self = self.to(DEVICE)
         
         with torch.no_grad():
             self.eval() # Sets the module in evaluation mode
+
+            dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
 
             correct_predictions = 0
             total_predictions = 0
@@ -312,7 +330,7 @@ class ResNet(nn.Module):
 
     def store_exemplars(self, classes, images):
         self.eval()
-        exemplars_dataset = []
+        self.exemplars_dataset = []
         with torch.no_grad():
             # Handle dimensions
             # print('Storing exemplars...')
@@ -342,7 +360,7 @@ class ResNet(nn.Module):
                 # Store only m exemplars
                 # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, take {min(batch, counter)}\t(batch={batch}, counter={counter})')
                 self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-                exemplars_dataset += [(image, label) for image in self.exemplars[label]['exemplars']]
+                self.exemplars_dataset += [(image.cpu(), label) for image in self.exemplars[label]['exemplars']]
 
                 counter -= batch
 
@@ -357,17 +375,17 @@ class ResNet(nn.Module):
 
         return maps
 
-def resnet20(parameters, pretrained=False, lwf=False, **kwargs):
+def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, lwf=False, **kwargs):
+def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, lwf=False, **kwargs):
+def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
     return model
