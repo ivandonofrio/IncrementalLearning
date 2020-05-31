@@ -323,7 +323,7 @@ class ResNet(nn.Module):
         for label in self.exemplars.keys():
 
             # Using all images store mean
-            features = self.get_mean_representation(images)
+            features = self.get_mean_representation(self.exemplars[label]['exemplars'])
             self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
 
             print(self.exemplars[label]['mean'])
