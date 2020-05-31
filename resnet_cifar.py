@@ -151,7 +151,8 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, get_only_features=False):
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -162,6 +163,10 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
+
+        if get_only_features:
+            return x
+
         x = self.fc(x)
 
         return x
@@ -299,7 +304,7 @@ class ResNet(nn.Module):
 
     def store_exemplars(self, classes, images):
 
-        # Handle dimensions 
+        # Handle dimensions
         incoming_data = list(zip(images, classes))
         self.processed_images += len(incoming_data)
 
@@ -318,8 +323,12 @@ class ResNet(nn.Module):
 
         for label in self.exemplars.keys():
 
+            # Using all images store mean
+            features = self.forward(self.exemplars[label]['exemplars'], True)
+            self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
+
+            # Store only m exemplars
             self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, count))
-            self.exemplars[label]['mean'] = torch.mean(torch.stack(self.exemplars[label]['exemplars']), 0, keepdim=True)
             counter -= batch
 
 
