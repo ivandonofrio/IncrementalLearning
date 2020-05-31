@@ -58,6 +58,7 @@ class Bottleneck(nn.Module):
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
+
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -263,6 +264,7 @@ class ResNet(nn.Module):
         self.iterations += 1
 
         # Store exemplars
+        self = self.to('cpu')
         self.store_exemplars(training_classes, training_images)
         
         return epochs_stats
@@ -326,11 +328,8 @@ class ResNet(nn.Module):
             features = self.get_mean_representation(self.exemplars[label]['exemplars'])
             self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
 
-            print(self.exemplars[label]['mean'])
-
             # Store only m exemplars
             self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-            print(self.exemplars[label]['exemplars'][0])
 
             counter -= batch
 
