@@ -319,7 +319,7 @@ class ResNet(nn.Module):
                     'exemplars': []
                 }
 
-            self.exemplars[label].exemplars.append(image)
+            self.exemplars[label]['exemplars'].append(image)
 
         for label in self.exemplars.keys():
 
