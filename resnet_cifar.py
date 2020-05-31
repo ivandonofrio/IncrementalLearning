@@ -232,11 +232,11 @@ class ResNet(nn.Module):
                 total_training += len(labels)
 
                 # Store new classes and images
-                c = [l.item() for l in labels]
+                c = [l.cpu().item() for l in labels]
 
-                training_images += [image.data for image in images]
+                training_images += [image.cpu().data for image in images]
                 training_classes += c
-                current_classes.update([l.item() for l in labels])
+                current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
                 loss.backward()  # backward pass: computes gradients
