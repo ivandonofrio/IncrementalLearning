@@ -98,8 +98,7 @@ class ResNet(nn.Module):
     def __init__(self, block, layers, parameters, lwf, num_classes=10, k=5000):
         self.inplanes = 16
         super(ResNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1,
-                               bias=False)
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
         self.layer1 = self._make_layer(block, 16, layers[0])
@@ -324,20 +323,25 @@ class ResNet(nn.Module):
         for label in self.exemplars.keys():
 
             # Using all images store mean
-            print(self.exemplars[label]['exemplars'])
-            features = self.forward(torch.stack(self.exemplars[label]['exemplars']), True)
-            print(features)
+            features = self.get_mean_representation(images)
             self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
 
             print(self.exemplars[label]['mean'])
 
             # Store only m exemplars
             self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, count))
-
-            print(self.exemplars[label]['exemplars'])
+            print(self.exemplars[label]['exemplars'][0])
 
             counter -= batch
 
+    def get_mean_representation(self, exemplars):
+
+        self.train(False)
+
+        # Extract maps from network
+        maps = [self.forward(torch.stack([exemplar]), get_only_features=True) for exemplar in exemplars]
+
+        return maps
 
 def resnet20(parameters, pretrained=False, lwf=False, **kwargs):
     n = 3
