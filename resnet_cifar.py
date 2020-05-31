@@ -95,6 +95,21 @@ class Bottleneck(nn.Module):
         return out
 
 
+class ExtDataSet:
+    def __init__(self, data):
+        self.images = []
+        self.labels = []
+        for x in data:
+            self.images.append(x[0])
+            self.labels.append(x[1])
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
+
+
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, parameters, lwf, use_exemplars, num_classes=10, k=5000):
@@ -200,8 +215,10 @@ class ResNet(nn.Module):
 
         dataset = train_dataset
         if self.use_exemplars:
-            dataset = list(dataset) + self.exemplars_dataset
-        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=0)
+            # dataset = list(dataset) + self.exemplars_dataset
+            dataset = ExtDataSet(list(dataset) + self.exemplars_dataset)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
+        print(f'Training on {len(loader)*self.batch_size} images...')
         
         for epoch in range(self.num_epochs):
             if verbose:
@@ -248,14 +265,10 @@ class ResNet(nn.Module):
 
                         if self.use_exemplars:
                             # Don't store existing exemplars
-                            # training_images += [image.data.cpu() for image in images if image.data.cpu() not in [x[0] for x in self.exemplars_dataset]]
-                            for image in images:
-                                image = image.data.cpu()
-                                for x in self.exemplars_dataset:
-                                    if torch.allclose(image, x[0]):
-                                        break
-                                training_images.append(image)
-                            training_classes += [l for l in c if l not in self.exemplars.keys()]
+                            for image, label in zip(images, labels):
+                                if label.item() not in self.learned_classes:
+                                    training_images.append(image.data.cpu())
+                                    training_classes.append(label.item())
                         current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
@@ -282,11 +295,11 @@ class ResNet(nn.Module):
         with torch.no_grad():
             self.learned_classes.update(current_classes)
             self.iterations += 1
-
+            
             # Store exemplars
             if self.use_exemplars:
                 # self = self.to('cpu')
-                # print(f'Received {len(train_dataloader.dataset)} images')
+                # print(f'Received {len(train_dataset)} images')
                 # print(f'Sending {len(training_images)} for exemplars...')
                 self.store_exemplars(training_classes, training_images)
         
@@ -333,13 +346,13 @@ class ResNet(nn.Module):
         self.exemplars_dataset = []
         with torch.no_grad():
             # Handle dimensions
-            # print('Storing exemplars...')
             incoming_data = list(zip(images, classes))
             self.processed_images += len(incoming_data)
 
             bound = counter = min(self.k, self.processed_images)
             # batch = round(bound/len(self.learned_classes))
             batch = bound // len(self.learned_classes)
+            print(f'Storing {batch} exemplars per class...')
 
             for image, label in incoming_data:
 
