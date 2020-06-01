@@ -404,13 +404,21 @@ class ResNet(nn.Module):
 
                         for image in current_exemplars:
 
-                            # This is a tensor
-                            ex_features, _ = self.get_mean_representation(selected_examplars)
-                            current_features, _ = self.get_mean_representation([image])
+                            if len(selected_examplars) > 0:
 
-                            # Sum features tensor
-                            ex_sum = torch.sum(torch.stack(ex_features), dim=0, keepdim=True)
-                            scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum, current_features[0]])), len(selected_examplars) + 1)
+                                # This is a tensor
+                                ex_features, _ = self.get_mean_representation(selected_examplars)
+                                current_feature, _ = self.get_mean_representation([image])
+
+                                # Sum features tensor
+                                ex_sum = torch.sum(torch.stack(ex_features), dim=0, keepdim=True)
+                                scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum, current_feature[0]])), len(selected_examplars) + 1)
+
+                            else:
+
+                                current_feature, _ = self.get_mean_representation([image])
+                                scaled_features_sum = current_feature[0]
+
 
                             # Get norm of difference
                             diff_norm = torch.norm(mean - scaled_features_sum)
