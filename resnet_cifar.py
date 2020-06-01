@@ -412,7 +412,7 @@ class ResNet(nn.Module):
 
                                 # Sum features tensor
                                 ex_sum = torch.sum(torch.stack(ex_features), dim=0, keepdim=True)
-                                scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum, current_feature[0]])), len(selected_examplars) + 1)
+                                scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum[0], current_feature[0]])), len(selected_examplars) + 1)
 
                             else:
 
