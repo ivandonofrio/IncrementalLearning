@@ -384,8 +384,6 @@ class ResNet(nn.Module):
 
                 elif policy == 'norm':
 
-                    print('Doing norm')
-
                     if first_iteration:
                         _, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
                         del _
@@ -396,8 +394,6 @@ class ResNet(nn.Module):
                     selected_examplars = []
 
                     while len(selected_examplars) < batch or len(current_exemplars) > 0:
-
-                        print(f'Length exemplars: {len(selected_examplars)}')
 
                         # Store norms from current mean
                         norms = []
@@ -419,19 +415,12 @@ class ResNet(nn.Module):
                                 current_feature, _ = self.get_mean_representation([image])
                                 scaled_features_sum = current_feature[0]
 
-
                             # Get norm of difference
                             diff_norm = torch.norm(mean - scaled_features_sum)
                             norms.append(diff_norm)
 
-                        print(norms)
-                        print(len(norms))
-
                         # Get index of min distance
                         index = norms.index(min(norms))
-
-                        print(index)
-
                         selected_examplars.append(current_exemplars[index])
                         del current_exemplars[index]
 
