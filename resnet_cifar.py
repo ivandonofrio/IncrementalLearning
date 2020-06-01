@@ -197,7 +197,7 @@ class ResNet(nn.Module):
 
         return x
 		
-    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10):
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random'):
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
@@ -307,7 +307,7 @@ class ResNet(nn.Module):
             if self.use_exemplars:
                 # print(f'Received {len(train_dataset)} images')
                 # print(f'Sending {len(training_images)} for exemplars...')
-                self.store_exemplars(training_classes, training_images)
+                self.store_exemplars(training_classes, training_images, policy=policy)
         
         return epochs_stats
       
