@@ -1,14 +1,15 @@
 import math
 import time
 import random
+
 from copy import deepcopy
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import torch.utils.model_zoo as model_zoo
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
 
 DEVICE = 'cuda'
@@ -297,7 +298,7 @@ class ResNet(nn.Module):
             # Step the scheduler
             scheduler.step()
 
-		    # Update learned classes
+	    # Update learned classes
         with torch.no_grad():
             self.learned_classes.update(current_classes)
             self.iterations += 1
@@ -311,10 +312,11 @@ class ResNet(nn.Module):
         return epochs_stats
       
     def perform_test(self, dataset):
+
         self = self.to(DEVICE)
         
         with torch.no_grad():
-            self.eval() # Sets the module in evaluation mode
+            self.eval()     # Sets the module in evaluation mode
 
             dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
 
@@ -346,12 +348,16 @@ class ResNet(nn.Module):
 
         return accuracy, prediction_history
 
-    def store_exemplars(self, classes, images):
+    def store_exemplars(self, classes, images, policy='random'):
+
         self.eval()
         self.exemplars_dataset = []
+
         with torch.no_grad():
+
             # Handle dimensions
             incoming_data = list(zip(images, classes))
+            first_iteration = self.processed_images == 0
             self.processed_images += len(incoming_data)
 
             bound = counter = min(self.k, self.processed_images)
@@ -370,27 +376,74 @@ class ResNet(nn.Module):
 
             for label in self.exemplars.keys():
 
-                # Using all images store mean
-                features = self.get_mean_representation(self.exemplars[label]['exemplars'])
-                self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
+                # Store only m exemplars with different policies
+                if policy == 'random':   # If policy is random or we do not have processed images yet
 
-                # Store only m exemplars
-                # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, take {min(batch, counter)}\t(batch={batch}, counter={counter})')
-                self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-                self.exemplars_dataset += [(image.cpu(), label) for image in self.exemplars[label]['exemplars']]
+                    selected_examplars = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
+                    self.exemplars_dataset += [(image.cpu(), label) for image in self.exemplars[label]['exemplars']]
+
+                elif policy == 'norm':
+
+                    print('Doing norm')
+
+                    if first_iteration:
+                        _, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
+                        del _
+                    else:
+                        mean = self.exemplars[label]['mean']
+
+                    current_exemplars = self.exemplars[label]['exemplars']
+                    selected_examplars = []
+
+                    while len(selected_examplars) < batch or len(current_exemplars) > 0:
+
+                        print(f'Length exemplars: {len(selected_examplars)}')
+
+                        # Store norms from current mean
+                        norms = []
+
+                        for image in current_exemplars:
+
+                            # This is a tensor
+                            ex_features, _ = self.get_mean_representation(selected_examplars)
+                            current_features, _ = self.get_mean_representation([image])
+
+                            # Sum features tensor
+                            ex_sum = torch.sum(torch.stack(ex_features), dim=0, keepdim=True)
+                            scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum, current_features[0]])), len(selected_examplars) + 1)
+
+                            # Get norm of difference
+                            diff_norm = torch.norm(mean - scaled_features_sum)
+                            norms.append(diff_norm)
+
+                        print(norms)
+                        print(len(norms))
+
+                        # Get index of min distance
+                        index = norms.index(min(norms))
+
+                        print(index)
+
+                        selected_examplars.append(current_exemplars[index])
+                        del selected_examplars[index]
+
+                # Update representation for current label
+                _, mean = self.get_mean_representation(selected_examplars)
+
+                self.exemplars[label]['exemplars'] = selected_examplars
+                self.exemplars[label]['mean'] = mean
 
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
 
         self.train(False)
-        # print('Getting mean representation...')
 
         # Extract maps from network
         with torch.no_grad():
             maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
 
-        return maps
+        return maps, torch.mean(torch.stack(features), 0, keepdim=True)
 
 def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 3
