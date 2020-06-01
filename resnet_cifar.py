@@ -433,7 +433,7 @@ class ResNet(nn.Module):
                         print(index)
 
                         selected_examplars.append(current_exemplars[index])
-                        del selected_examplars[index]
+                        del current_exemplars[index]
 
                 # Update representation for current label
                 _, mean = self.get_mean_representation(selected_examplars)
