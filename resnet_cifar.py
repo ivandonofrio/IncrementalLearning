@@ -451,7 +451,7 @@ class ResNet(nn.Module):
         with torch.no_grad():
             maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
 
-        return maps, torch.mean(torch.stack(features), 0, keepdim=True)
+        return maps, torch.mean(torch.stack(maps), 0, keepdim=True)
 
 def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 3
