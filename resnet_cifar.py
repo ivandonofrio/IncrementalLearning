@@ -366,7 +366,7 @@ class ResNet(nn.Module):
             new_classes = {label:(True if label not in discovered_classes else False) for image, label in incoming_data}
 
             for image, label in incoming_data:
-                
+
                 if label not in self.exemplars:
                     self.exemplars[label] = {
                         'mean': None,
@@ -441,9 +441,13 @@ class ResNet(nn.Module):
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
                         selected_representations = features[:batch]
 
+                print(f'Selected exemplars: {len(selected_examplars)}')
+
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
                 self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0, keepdim=True)
+
+                print(f'Mean: {self.exemplars[label]['mean']}')
 
                 counter -= batch
 
