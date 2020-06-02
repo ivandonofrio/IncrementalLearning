@@ -405,7 +405,7 @@ class ResNet(nn.Module):
                         selected_representations = []
 
                         # Setup incremental features collector
-                        incremental_features_sum = torch.FloatTensor(len(repr[0]) * [0])
+                        incremental_features_sum = torch.FloatTensor(len(features[0]) * [0])
 
                         while len(selected_examplars) < batch or len(current_exemplars) > 0:
 
