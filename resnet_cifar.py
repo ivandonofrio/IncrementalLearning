@@ -364,6 +364,7 @@ class ResNet(nn.Module):
             print(f'Storing {batch} exemplars per class...')
 
             new_classes = {label:(True if label not in discovered_classes else False) for image, label in incoming_data}
+            print(new_classes)
 
             for image, label in incoming_data:
 
