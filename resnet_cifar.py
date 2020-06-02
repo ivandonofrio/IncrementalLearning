@@ -364,7 +364,6 @@ class ResNet(nn.Module):
             print(f'Storing {batch} exemplars per class...')
 
             new_classes = {label:(True if label in discovered_classes else False) for label in self.learned_classes}
-            print(new_classes)
 
             for image, label in incoming_data:
 
@@ -442,13 +441,9 @@ class ResNet(nn.Module):
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
                         selected_representations = features[:batch]
 
-                print(f'Selected exemplars: {len(selected_examplars)}')
-
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
                 self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
-
-                print(f"Mean: {self.exemplars[label]['mean']}")
 
                 counter -= batch
 
