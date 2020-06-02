@@ -407,7 +407,7 @@ class ResNet(nn.Module):
                         # Setup incremental features collector
                         incremental_features_sum = torch.FloatTensor(len(features[0]) * [0])
 
-                        while len(selected_examplars) < batch or len(current_exemplars) > 0:
+                        while len(selected_examplars) < batch and len(current_exemplars) > 0:
 
                             # Store norms from current mean
                             norms = []
@@ -417,7 +417,7 @@ class ResNet(nn.Module):
 
                                 # Sum current image and
                                 feature = current_representations[index]
-                                scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0, keepdim=True), len(selected_examplars) + 1)
+                                scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
 
                                 # Get norm of difference
                                 diff_norm = torch.norm(mean - scaled_features_sum)
@@ -446,7 +446,7 @@ class ResNet(nn.Module):
 
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
-                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0, keepdim=True)
+                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
 
                 print(f"Mean: {self.exemplars[label]['mean']}")
 
@@ -461,7 +461,7 @@ class ResNet(nn.Module):
             maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True)[0].cpu() for exemplar in exemplars]
             maps = [map/torch.norm(map) for map in maps]
 
-        return maps, torch.mean(torch.stack(maps), 0, keepdim=True)
+        return maps, torch.mean(torch.stack(maps), 0)
 
 def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
     n = 3
