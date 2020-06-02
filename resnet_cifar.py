@@ -388,7 +388,7 @@ class ResNet(nn.Module):
                 features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
 
                 # Store only m exemplars with different policies
-                if policy == 'random':   # If policy is random or we do not have processed images yet
+                if policy == 'random':
 
                     # Get random indices sample
                     index_sample = random.sample(list(range(batch)), min(batch, counter))
@@ -421,7 +421,7 @@ class ResNet(nn.Module):
                             for index, image in enumerate(current_exemplars):
 
                                 # Sum current image and
-                                feature = features[index]
+                                feature = current_representations[index]
                                 scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0, keepdim=True), len(selected_examplars) + 1)
 
                                 # Get norm of difference
@@ -433,10 +433,10 @@ class ResNet(nn.Module):
 
                             # Update selection with nearest exemplar and representation
                             selected_examplars.append(current_exemplars[index])
-                            selected_features.append(current_representations[index])
+                            selected_representations.append(current_representations[index])
 
                             # Update representation sum
-                            incremental_features_sum += selected_features[-1]
+                            incremental_features_sum += selected_representations[-1]
 
                             # Remove elements from representations and exemplars sets
                             del current_representations[index], current_exemplars[index]
@@ -445,11 +445,11 @@ class ResNet(nn.Module):
 
                         # If not new class only select best representations
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
-                        selected_features = features[:batch]
+                        selected_representations = features[:batch]
 
                 self.exemplars[label]['exemplars'] = selected_examplars
-                self.exemplars[label]['representation'] = selected_features
-                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_features), dim=0, keepdim=True)
+                self.exemplars[label]['representation'] = selected_representations
+                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0, keepdim=True)
 
                 counter -= batch
 
