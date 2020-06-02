@@ -119,7 +119,7 @@ class LabelledDataset(Dataset):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, use_exemplars, num_classes=10, k=5000):
+    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000):
         self.inplanes = 16
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
@@ -151,6 +151,7 @@ class ResNet(nn.Module):
         # Set utils structures
         self.lwf = lwf
         self.use_exemplars = use_exemplars
+        self.ncm = ncm
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
@@ -158,7 +159,6 @@ class ResNet(nn.Module):
 
         # Exemplars structure
         self.exemplars = {}
-        self.exemplars_dataset = []
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -223,7 +223,11 @@ class ResNet(nn.Module):
         dataset = train_dataset
         if self.use_exemplars:
             # Merge new training image and exemplars
-            dataset = ConcatDataset([dataset, LabelledDataset(self.exemplars_dataset)])
+            exemplars_dataset = []
+            for label in self.exemplars.keys():
+                for image in self.exemplars[label]['exemplars']:
+                    exemplars_dataset.append((image, label))
+            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset)])
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
 
@@ -298,7 +302,7 @@ class ResNet(nn.Module):
             # Step the scheduler
             scheduler.step()
 
-	    # Update learned classes
+	      # Update learned classes
         with torch.no_grad():
 
             self.learned_classes.update(current_classes)
@@ -329,11 +333,14 @@ class ResNet(nn.Module):
             for images, labels in dataloader:
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
-                # Forward Pass
-                outputs = self.forward(images)
+                if self.ncm:
+                    preds = self.get_nearest_classes(images)
+                else:
+                    # Forward Pass
+                    outputs = self.forward(images)
 
-                # Get predictions
-                _, preds = torch.max(outputs.data, 1)
+                    # Get predictions
+                    _, preds = torch.max(outputs.data, 1)
 
                 # Update Corrects
                 correct_predictions += torch.sum(preds == labels.data).data.item()
@@ -350,7 +357,6 @@ class ResNet(nn.Module):
     def store_exemplars(self, classes, images, discovered_classes, policy='random'):
 
         self.eval()
-        self.exemplars_dataset = []
 
         with torch.no_grad():
 
@@ -444,6 +450,7 @@ class ResNet(nn.Module):
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
                 self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
+                # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, {len(self.exemplars[label]["representation"])} representations, mean {self.exemplars[label]["mean"]}')
 
                 counter -= batch
 
@@ -458,17 +465,30 @@ class ResNet(nn.Module):
 
         return maps, torch.mean(torch.stack(maps), 0)
 
-def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+    def get_nearest_classes(self, images):
+      
+        self.eval()
+        features = self.forward(images, get_only_features=True)
+        features = [(map/torch.norm(map)) for map in features]
+        preds = []
+
+        for map in features:
+            dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
+            preds.append(min(dst, key=dst.get))
+
+        return torch.Tensor(preds).to(DEVICE)
+
+def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
