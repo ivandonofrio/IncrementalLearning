@@ -416,6 +416,7 @@ class ResNet(nn.Module):
                             for index, image in enumerate(current_exemplars):
 
                                 # Sum current image and
+                                print(incremental_features_sum)
                                 feature = current_representations[index]
                                 scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0, keepdim=True), len(selected_examplars) + 1)
 
@@ -458,7 +459,7 @@ class ResNet(nn.Module):
 
         # Extract maps from network
         with torch.no_grad():
-            maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
+            maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True)[0].cpu() for exemplar in exemplars]
             maps = [map/torch.norm(map) for map in maps]
 
         return maps, torch.mean(torch.stack(maps), 0, keepdim=True)
