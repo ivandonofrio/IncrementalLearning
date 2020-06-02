@@ -447,7 +447,7 @@ class ResNet(nn.Module):
                 self.exemplars[label]['representation'] = selected_representations
                 self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0, keepdim=True)
 
-                print(f'Mean: {self.exemplars[label]['mean']}')
+                print(f"Mean: {self.exemplars[label]['mean']}")
 
                 counter -= batch
 
