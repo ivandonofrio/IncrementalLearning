@@ -416,7 +416,6 @@ class ResNet(nn.Module):
                             for index, image in enumerate(current_exemplars):
 
                                 # Sum current image and
-                                print(incremental_features_sum)
                                 feature = current_representations[index]
                                 scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0, keepdim=True), len(selected_examplars) + 1)
 
