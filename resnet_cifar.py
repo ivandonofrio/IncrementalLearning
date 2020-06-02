@@ -376,6 +376,7 @@ class ResNet(nn.Module):
                 if label not in self.exemplars:
                     self.exemplars[label] = {
                         'mean': None,
+                        'mean_batch': None,
                         'exemplars': [],
                         'representation': []
                     }
@@ -384,8 +385,9 @@ class ResNet(nn.Module):
 
             for label in self.exemplars.keys():
 
-                # Get current mean and features
+                # Get current mean and features and store each betch mean
                 features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
+                self.exemplars[label]['mean_batch'] = mean
 
                 # Store only m exemplars with different policies
                 if policy == 'random':
@@ -466,7 +468,7 @@ class ResNet(nn.Module):
         return maps, torch.mean(torch.stack(maps), 0)
 
     def get_nearest_classes(self, images):
-      
+
         self.eval()
         features = self.forward(images, get_only_features=True)
         features = [(map/torch.norm(map)) for map in features]
