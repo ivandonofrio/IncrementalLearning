@@ -300,14 +300,13 @@ class ResNet(nn.Module):
 
 	    # Update learned classes
         with torch.no_grad():
+
             self.learned_classes.update(current_classes)
             self.iterations += 1
 
             # Store exemplars
             if self.use_exemplars:
-                # print(f'Received {len(train_dataset)} images')
-                # print(f'Sending {len(training_images)} for exemplars...')
-                self.store_exemplars(training_classes, training_images, policy=policy)
+                self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
 
         return epochs_stats
 
@@ -348,7 +347,7 @@ class ResNet(nn.Module):
 
         return accuracy, prediction_history
 
-    def store_exemplars(self, classes, images, policy='random'):
+    def store_exemplars(self, classes, images, discovered_classes, policy='random'):
 
         self.eval()
         self.exemplars_dataset = []
@@ -364,21 +363,16 @@ class ResNet(nn.Module):
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
-            new_classes = {}
+            new_classes = {label:(True if label not in discovered_classes else False) for image, label in incoming_data}
 
             for image, label in incoming_data:
+                
                 if label not in self.exemplars:
-
                     self.exemplars[label] = {
                         'mean': None,
                         'exemplars': [],
                         'representation': []
                     }
-
-                    new_classes[label] = True
-
-                else:
-                    new_classes[label] = False
 
                 self.exemplars[label]['exemplars'].append(image)
 
