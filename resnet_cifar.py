@@ -137,7 +137,7 @@ class ResNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-		
+
         # Hyperparameters
         self.num_classes = num_classes
         self.batch_size = parameters['BATCH_SIZE']
@@ -196,7 +196,7 @@ class ResNet(nn.Module):
         x = self.fc(x)
 
         return x
-		
+
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random'):
         self = self.to(DEVICE)
         cudnn.benchmark
@@ -210,10 +210,10 @@ class ResNet(nn.Module):
             old = deepcopy(self)
             for p in old.parameters():
                 p.requires_grad = False
-        
+
         epochs_stats = {}
         last_time = time.time()
-        
+
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
@@ -226,7 +226,7 @@ class ResNet(nn.Module):
             dataset = ConcatDataset([dataset, LabelledDataset(self.exemplars_dataset)])
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
-        
+
         for epoch in range(self.num_epochs):
             if verbose:
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
@@ -260,7 +260,7 @@ class ResNet(nn.Module):
 
                     # Include old predictions for distillation
                     target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
-				
+
                 loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
@@ -302,19 +302,19 @@ class ResNet(nn.Module):
         with torch.no_grad():
             self.learned_classes.update(current_classes)
             self.iterations += 1
-            
+
             # Store exemplars
             if self.use_exemplars:
                 # print(f'Received {len(train_dataset)} images')
                 # print(f'Sending {len(training_images)} for exemplars...')
                 self.store_exemplars(training_classes, training_images, policy=policy)
-        
+
         return epochs_stats
-      
+
     def perform_test(self, dataset):
 
         self = self.to(DEVICE)
-        
+
         with torch.no_grad():
             self.eval()     # Sets the module in evaluation mode
 
@@ -364,71 +364,92 @@ class ResNet(nn.Module):
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
-            for image, label in incoming_data:
+            new_classes = {}
 
+            for image, label in incoming_data:
                 if label not in self.exemplars:
+
                     self.exemplars[label] = {
                         'mean': None,
-                        'exemplars': []
+                        'exemplars': [],
+                        'representation': []
                     }
+
+                    new_classes[label] = True
+
+                else:
+                    new_classes[label] = False
 
                 self.exemplars[label]['exemplars'].append(image)
 
             for label in self.exemplars.keys():
 
+                # Get current mean and features
+                features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
+
                 # Store only m exemplars with different policies
                 if policy == 'random':   # If policy is random or we do not have processed images yet
 
-                    selected_examplars = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-                    self.exemplars_dataset += [(image.cpu(), label) for image in self.exemplars[label]['exemplars']]
+                    # Get random indices sample
+                    index_sample = random.sample(list(range(batch)), min(batch, counter))
+
+                    # Random subset of exemplars and representation
+                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
+                    selected_representations = [el for i, el in enumerate(features) if i in indices]
 
                 elif policy == 'norm':
 
-                    if first_iteration:
-                        _, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
-                        del _
+                    if new_classes[label]:
+
+                        # Store class exemplars
+                        current_exemplars = self.exemplars[label]['exemplars'].copy()
+                        current_representations = features.copy()
+
+                        # Initialise features and exemplars subset collection
+                        selected_examplars = []
+                        selected_representations = []
+
+                        # Setup incremental features collector
+                        incremental_features_sum = torch.FloatTensor(len(repr[0]) * [0])
+
+                        while len(selected_examplars) < batch or len(current_exemplars) > 0:
+
+                            # Store norms from current mean
+                            norms = []
+
+                            # Associate each representation to its distance from mean
+                            for index, image in enumerate(current_exemplars):
+
+                                # Sum current image and
+                                feature = features[index]
+                                scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0, keepdim=True), len(selected_examplars) + 1)
+
+                                # Get norm of difference
+                                diff_norm = torch.norm(mean - scaled_features_sum)
+                                norms.append(diff_norm)
+
+                            # Get index of min distance
+                            index = norms.index(min(norms))
+
+                            # Update selection with nearest exemplar and representation
+                            selected_examplars.append(current_exemplars[index])
+                            selected_features.append(current_representations[index])
+
+                            # Update representation sum
+                            incremental_features_sum += selected_features[-1]
+
+                            # Remove elements from representations and exemplars sets
+                            del current_representations[index], current_exemplars[index]
+
                     else:
-                        mean = self.exemplars[label]['mean']
 
-                    current_exemplars = self.exemplars[label]['exemplars']
-                    selected_examplars = []
-
-                    while len(selected_examplars) < batch or len(current_exemplars) > 0:
-
-                        # Store norms from current mean
-                        norms = []
-
-                        for image in current_exemplars:
-
-                            if len(selected_examplars) > 0:
-
-                                # This is a tensor
-                                ex_features, _ = self.get_mean_representation(selected_examplars)
-                                current_feature, _ = self.get_mean_representation([image])
-
-                                # Sum features tensor
-                                ex_sum = torch.sum(torch.stack(ex_features), dim=0, keepdim=True)
-                                scaled_features_sum = torch.div(torch.sum(torch.stack([ex_sum[0], current_feature[0]])), len(selected_examplars) + 1)
-
-                            else:
-
-                                current_feature, _ = self.get_mean_representation([image])
-                                scaled_features_sum = current_feature[0]
-
-                            # Get norm of difference
-                            diff_norm = torch.norm(mean - scaled_features_sum)
-                            norms.append(diff_norm)
-
-                        # Get index of min distance
-                        index = norms.index(min(norms))
-                        selected_examplars.append(current_exemplars[index])
-                        del current_exemplars[index]
-
-                # Update representation for current label
-                _, mean = self.get_mean_representation(selected_examplars)
+                        # If not new class only select best representations
+                        selected_examplars = self.exemplars[label]['exemplars'][:batch]
+                        selected_features = features[:batch]
 
                 self.exemplars[label]['exemplars'] = selected_examplars
-                self.exemplars[label]['mean'] = mean
+                self.exemplars[label]['representation'] = selected_features
+                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_features), dim=0, keepdim=True)
 
                 counter -= batch
 
@@ -439,6 +460,7 @@ class ResNet(nn.Module):
         # Extract maps from network
         with torch.no_grad():
             maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
+            maps = [map/torch.norm(map) for map in maps]
 
         return maps, torch.mean(torch.stack(maps), 0, keepdim=True)
 
