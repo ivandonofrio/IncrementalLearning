@@ -363,7 +363,7 @@ class ResNet(nn.Module):
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
-            new_classes = {label:(True if label not in discovered_classes else False) for image, label in incoming_data}
+            new_classes = {label:(True if label in discovered_classes else False) for label in self.learned_classes}
             print(new_classes)
 
             for image, label in incoming_data:
