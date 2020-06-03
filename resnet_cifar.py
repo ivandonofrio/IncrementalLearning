@@ -334,8 +334,10 @@ class ResNet(nn.Module):
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
                 if self.ncm:
+                    # print('Classifying with NCM...')
                     preds = self.get_nearest_classes(images)
                 else:
+                    # print('Classifying with FC layer...')
                     # Forward Pass
                     outputs = self.forward(images)
 
@@ -376,7 +378,6 @@ class ResNet(nn.Module):
                 if label not in self.exemplars:
                     self.exemplars[label] = {
                         'mean': None,
-                        'mean_batch': None,
                         'exemplars': [],
                         'representation': []
                     }
@@ -385,9 +386,8 @@ class ResNet(nn.Module):
 
             for label in self.exemplars.keys():
 
-                # Get current mean and features and store each betch mean
+                # Get current mean and features
                 features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
-                self.exemplars[label]['mean_batch'] = mean
 
                 # Store only m exemplars with different policies
                 if policy == 'random':
@@ -396,8 +396,8 @@ class ResNet(nn.Module):
                     index_sample = random.sample(list(range(batch)), min(batch, counter))
 
                     # Random subset of exemplars and representation
-                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
-                    selected_representations = [el for i, el in enumerate(features) if i in indices]
+                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in index_sample]
+                    selected_representations = [el for i, el in enumerate(features) if i in index_sample]
 
                 elif policy == 'norm':
 
@@ -451,7 +451,8 @@ class ResNet(nn.Module):
 
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
-                self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
+                # self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
+                self.exemplars[label]['mean'] = mean
                 # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, {len(self.exemplars[label]["representation"])} representations, mean {self.exemplars[label]["mean"]}')
 
                 counter -= batch
@@ -468,15 +469,19 @@ class ResNet(nn.Module):
         return maps, torch.mean(torch.stack(maps), 0)
 
     def get_nearest_classes(self, images):
-
+      
         self.eval()
-        features = self.forward(images, get_only_features=True)
-        features = [(map/torch.norm(map)) for map in features]
-        preds = []
+        with torch.no_grad():
+            features = self.forward(images, get_only_features=True)
+            features = [(map/torch.norm(map)) for map in features]
+            preds = []
 
-        for map in features:
-            dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
-            preds.append(min(dst, key=dst.get))
+            for map in features:
+                dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
+                # print(dst)
+                pred = min(dst, key=dst.get)
+                preds.append(pred)
+                #print(f'Image classified as {pred}')
 
         return torch.Tensor(preds).to(DEVICE)
 
