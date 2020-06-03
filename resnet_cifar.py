@@ -425,11 +425,13 @@ class ResNet(nn.Module):
 
                                 # Sum current image and
                                 feature = current_representations[index]
-                                scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
-                                scaled_features_sum /= torch.norm(scaled_features_sum)
+
+                                scaled_features_sum = (feature + incremental_features_sum)/(len(selected_examplars) + 1)
+                                #scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
+                                scaled_features_sum /= scaled_features_sum.norm()
 
                                 # Get norm of difference
-                                diff_norm = torch.norm(mean - scaled_features_sum)
+                                diff_norm = (mean - scaled_features_sum).norm()
                                 norms.append(diff_norm)
 
                             # Get index of min distance
@@ -460,15 +462,16 @@ class ResNet(nn.Module):
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
+        
         # Returns image features for current network and their non-normalized mean
         self.train(False)
 
         # Extract maps from network
         with torch.no_grad():
-            maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True)[0].cpu() for exemplar in exemplars]
-            maps = [map/torch.norm(map) for map in maps]
+            maps = [self.forward(exemplar.cuda().unsqueeze(1), get_only_features=True).cpu().squeeze() for exemplar in exemplars]
+            maps = [map/map.norm() for map in maps]
 
-        return maps, torch.mean(torch.stack(maps), 0)
+        return maps, torch.stack(maps).mean(0).squeeze()
 
     def get_nearest_classes(self, images):
 
