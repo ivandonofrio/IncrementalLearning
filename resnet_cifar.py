@@ -427,7 +427,6 @@ class ResNet(nn.Module):
                                 feature = current_representations[index]
 
                                 scaled_features_sum = (feature + incremental_features_sum)/(len(selected_examplars) + 1)
-                                #scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
                                 scaled_features_sum /= scaled_features_sum.norm()
 
                                 # Get norm of difference
@@ -455,9 +454,7 @@ class ResNet(nn.Module):
 
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['representation'] = selected_representations
-                # self.exemplars[label]['mean'] = torch.mean(torch.stack(selected_representations), dim=0)
                 self.exemplars[label]['mean'] = mean
-                # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, {len(self.exemplars[label]["representation"])} representations, mean {self.exemplars[label]["mean"]}')
 
                 counter -= batch
 
@@ -477,11 +474,13 @@ class ResNet(nn.Module):
 
         self.eval()
         with torch.no_grad():
+
             features = self.forward(images, get_only_features=True)
-            features = [(map/torch.norm(map)) for map in features]
+            features = [map/torch.norm(map) for map in features]
             preds = []
 
             for map in features:
+
                 dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
                 # print(dst)
                 pred = min(dst, key=dst.get)
