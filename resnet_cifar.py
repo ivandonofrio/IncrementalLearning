@@ -427,10 +427,10 @@ class ResNet(nn.Module):
                                 feature = current_representations[index]
 
                                 scaled_features_sum = (feature + incremental_features_sum)/(len(selected_examplars) + 1)
-                                scaled_features_sum /= scaled_features_sum.norm(p=2)
+                                scaled_features_sum /= scaled_features_sum.norm()
 
                                 # Get norm of difference
-                                diff_norm = (mean - scaled_features_sum).norm(p=2)
+                                diff_norm = (mean - scaled_features_sum).norm()
                                 norms.append(diff_norm)
 
                             # Get index of min distance
@@ -466,7 +466,7 @@ class ResNet(nn.Module):
         # Extract maps from network
         with torch.no_grad():
             maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().squeeze() for exemplar in exemplars]
-            maps = [map/map.norm(p=2) for map in maps]
+            maps = [map/map.norm() for map in maps]
 
         return maps, torch.stack(maps).mean(0).squeeze()
 
@@ -476,12 +476,12 @@ class ResNet(nn.Module):
         with torch.no_grad():
 
             features = self.forward(images, get_only_features=True)
-            features = [map/map.norm(p=2) for map in features]
+            features = [map/torch.norm(map) for map in features]
             preds = []
 
             for map in features:
 
-                dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE), p=2) for label in self.exemplars.keys()}
+                dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
                 pred = min(dst, key=dst.get)
                 preds.append(pred)
 
