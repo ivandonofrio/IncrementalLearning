@@ -388,7 +388,7 @@ class ResNet(nn.Module):
 
                 # Get current mean and features
                 features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
-                mean /= torch.norm(mean, dim=0)
+                mean /= torch.norm(mean)
 
                 # Store only m exemplars with different policies
                 if policy == 'random':
@@ -426,7 +426,7 @@ class ResNet(nn.Module):
                                 # Sum current image and
                                 feature = current_representations[index]
                                 scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
-                                scaled_features_sum /= torch.norm(scaled_features_sum, dim=0)
+                                scaled_features_sum /= torch.norm(scaled_features_sum)
 
                                 # Get norm of difference
                                 diff_norm = torch.norm(mean - scaled_features_sum)
@@ -466,7 +466,7 @@ class ResNet(nn.Module):
         # Extract maps from network
         with torch.no_grad():
             maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True)[0].cpu() for exemplar in exemplars]
-            maps = [map/torch.norm(map, dim=0) for map in maps]
+            maps = [map/torch.norm(map) for map in maps]
 
         return maps, torch.mean(torch.stack(maps), 0)
 
@@ -475,7 +475,7 @@ class ResNet(nn.Module):
         self.eval()
         with torch.no_grad():
             features = self.forward(images, get_only_features=True)
-            features = [(map/torch.norm(map, dim=0)) for map in features]
+            features = [(map/torch.norm(map)) for map in features]
             preds = []
 
             for map in features:
