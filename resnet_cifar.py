@@ -462,13 +462,13 @@ class ResNet(nn.Module):
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
-        
+
         # Returns image features for current network and their non-normalized mean
         self.train(False)
 
         # Extract maps from network
         with torch.no_grad():
-            maps = [self.forward(exemplar.cuda().unsqueeze(1), get_only_features=True).cpu().squeeze() for exemplar in exemplars]
+            maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().squeeze() for exemplar in exemplars]
             maps = [map/map.norm() for map in maps]
 
         return maps, torch.stack(maps).mean(0).squeeze()
