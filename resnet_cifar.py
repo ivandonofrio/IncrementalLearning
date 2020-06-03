@@ -239,12 +239,13 @@ class ResNet(nn.Module):
             dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset)])
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
+        total_loss = math.nan
 
         for epoch in range(self.num_epochs):
             if verbose:
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
-                    total_loss if len(epochs_stats) > 0 else -1,
+                    total_loss,
                     scheduler.get_last_lr()
                 ))
 
@@ -339,7 +340,7 @@ class ResNet(nn.Module):
             # Convert dictionary of exemplars into:
             # - X_exemplars: list of tensors (each tensor is an image)
             # - y: list of labels
-            for label, value in net.exemplars.items():
+            for label, value in self.exemplars.items():
                 X_exemplars += value['exemplars']
                 y += [label] * len(value['exemplars'])
             
@@ -347,7 +348,7 @@ class ResNet(nn.Module):
             # its features representation
             for image in DataLoader(X_exemplars):
                 image = image.cuda()
-                features = net.forward(image, get_only_features=True)
+                features = self.forward(image, get_only_features=True)
 
                 # Bring tensor to CPU to transform it into a numpy array
                 features = features.cpu().detach().numpy()[0]
@@ -379,19 +380,19 @@ class ResNet(nn.Module):
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
                 if classifier == 'ncm':
-                    # print('Classifying with NCM...')
-                    preds = self.get_nearest_classes(images)
+                    if self.ncm:
+                        preds = self.get_nearest_classes(images)
+                    else:
+                        raise ValueError("The model is not trained on NCM")
 
                 elif classifier == 'fc':
-                    # print('Classifying with FC layer...')
-                    # Forward Pass
                     outputs = self.forward(images)
 
                     # Get predictions
                     _, preds = torch.max(outputs.data, 1)
 
                 elif classifier == 'svm':
-                    features = net.forward(images, get_only_features=True)
+                    features = self.forward(images, get_only_features=True)
 
                     # Bring tensor to CPU to transform it into a numpy array
                     features = features.cpu().detach().numpy()
@@ -401,7 +402,7 @@ class ResNet(nn.Module):
                     preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
 
                 else:
-                    raise("Wrong value for argument 'classifier'")
+                    raise ValueError("Wrong value for argument 'classifier'")
 
                 # Update Corrects
                 correct_predictions += torch.sum(preds == labels.data).data.item()
