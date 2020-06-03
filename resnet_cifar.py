@@ -388,6 +388,7 @@ class ResNet(nn.Module):
 
                 # Get current mean and features
                 features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
+                mean /= torch.norm(mean)
 
                 # Store only m exemplars with different policies
                 if policy == 'random':
@@ -425,6 +426,7 @@ class ResNet(nn.Module):
                                 # Sum current image and
                                 feature = current_representations[index]
                                 scaled_features_sum = torch.div(torch.sum(torch.stack([feature, incremental_features_sum]), dim=0), len(selected_examplars) + 1)
+                                scaled_features_sum /= torch.norm(scaled_features_sum)
 
                                 # Get norm of difference
                                 diff_norm = torch.norm(mean - scaled_features_sum)
@@ -458,7 +460,7 @@ class ResNet(nn.Module):
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
-
+        # Returns image features for current network and their non-normalized mean
         self.train(False)
 
         # Extract maps from network
