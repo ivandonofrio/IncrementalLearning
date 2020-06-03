@@ -482,10 +482,8 @@ class ResNet(nn.Module):
             for map in features:
 
                 dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
-                # print(dst)
                 pred = min(dst, key=dst.get)
                 preds.append(pred)
-                #print(f'Image classified as {pred}')
 
         return torch.Tensor(preds).to(DEVICE)
 
