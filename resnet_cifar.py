@@ -11,6 +11,10 @@ import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
+from itertools import chain
+from sklearn.svm import SVC
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 DEVICE = 'cuda'
 
@@ -156,6 +160,11 @@ class ResNet(nn.Module):
         self.learned_classes = set()
         self.k = k
         self.processed_images = 0
+
+        self.clf_type = None # String with cached classifier ('svc', 'knn', ...)
+        self.clf = None # cache classifier object (SVM, ...) to test it
+                        # multiple times without fitting it at each test
+                        # (if no training in the meanwhile)
 
         # Exemplars structure
         self.exemplars = {}
@@ -312,9 +321,45 @@ class ResNet(nn.Module):
             if self.use_exemplars:
                 self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
 
+        # Reset all classifiers: the fitted one is not valid anymore
+        self.clf = self.clf_type = None
+
         return epochs_stats
 
-    def perform_test(self, dataset):
+    def perform_test(self, dataset, classifier = 'fc'):
+        """
+        :param classifier: 'fc', 'ncm', 'svm'
+        """
+
+        if classifier == 'svm' and self.clf_type == 'svm':
+            X_exemplars = []    # List of images
+            X = []  # List of features (one for each image)
+            y = []  # List of labels
+            
+            # Convert dictionary of exemplars into:
+            # - X_exemplars: list of tensors (each tensor is an image)
+            # - y: list of labels
+            for label, value in net.exemplars.items():
+                X_exemplars += value['exemplars']
+                y += [label] * len(value['exemplars'])
+            
+            # Convert X_exemplars: each image will be converted into X to
+            # its features representation
+            for image in DataLoader(X_exemplars):
+                image = image.cuda()
+                features = net.forward(image, get_only_features=True)
+
+                # Bring tensor to CPU to transform it into a numpy array
+                features = features.cpu().detach().numpy()[0]
+
+                X.append(features)
+            
+            # Fit the SVM, cache it
+            self.clf = make_pipeline(StandardScaler(), SVC(gamma='auto'))
+            self.clf.fit(X, y)
+
+            # Remember that I have an SVM cached
+            self.clf_type = 'svm'
 
         self = self.to(DEVICE)
 
@@ -333,16 +378,30 @@ class ResNet(nn.Module):
             for images, labels in dataloader:
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
-                if self.ncm:
+                if classifier == 'ncm':
                     # print('Classifying with NCM...')
                     preds = self.get_nearest_classes(images)
-                else:
+
+                elif classifier == 'fc':
                     # print('Classifying with FC layer...')
                     # Forward Pass
                     outputs = self.forward(images)
 
                     # Get predictions
                     _, preds = torch.max(outputs.data, 1)
+
+                elif classifier == 'svm':
+                    features = net.forward(images, get_only_features=True)
+
+                    # Bring tensor to CPU to transform it into a numpy array
+                    features = features.cpu().detach().numpy()
+                    print(features.shape)
+
+                    preds = self.clf.predict(features)
+                    preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
+
+                else:
+                    raise("Wrong value for argument 'classifier'")
 
                 # Update Corrects
                 correct_predictions += torch.sum(preds == labels.data).data.item()
