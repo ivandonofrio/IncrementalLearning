@@ -12,6 +12,9 @@ import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
 from itertools import chain
+
+# Classifiers
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -161,10 +164,10 @@ class ResNet(nn.Module):
         self.k = k
         self.processed_images = 0
 
-        self.clf_type = None # String with cached classifier ('svc', 'knn', ...)
-        self.clf = None # cache classifier object (SVM, ...) to test it
+        self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
                         # (if no training in the meanwhile)
+                        # key: 'svm' or 'knn', value: the fitted classifier
 
         # Exemplars structure
         self.exemplars = {}
@@ -322,17 +325,19 @@ class ResNet(nn.Module):
             if self.use_exemplars:
                 self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
 
-        # Reset all classifiers: the fitted one is not valid anymore
-        self.clf = self.clf_type = None
+        # Reset all classifiers: the fitted ones are not valid anymore
+        self.clf = {}
 
         return epochs_stats
 
-    def perform_test(self, dataset, classifier = 'fc'):
+    def perform_test(self, dataset, classifier = 'fc', **classifier_kwargs):
         """
-        :param classifier: 'fc', 'ncm', 'svm'
+        :param classifier: 'fc', 'ncm', 'svm', 'knn'
         """
 
-        if classifier == 'svm' and self.clf_type == 'svm':
+        # If classifying with SVM or KNN, and that type of classifier is not cached yet
+        if classifier in ['svm', 'knn'] and classifier not in self.csf:
+
             X_exemplars = []    # List of images
             X = []  # List of features (one for each image)
             y = []  # List of labels
@@ -355,12 +360,16 @@ class ResNet(nn.Module):
 
                 X.append(features)
             
-            # Fit the SVM, cache it
-            self.clf = make_pipeline(StandardScaler(), SVC(gamma='auto'))
-            self.clf.fit(X, y)
+            
+            if classifier == 'svm':
+                self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
 
-            # Remember that I have an SVM cached
-            self.clf_type = 'svm'
+            elif classifier == 'knn':
+                self.clf[classifier] = KNeighborsClassifier(**classifier_kwargs)
+            
+            # Fit the classifier
+            self.clf[classifier].fit(X, y)
+
 
         self = self.to(DEVICE)
 
@@ -391,14 +400,13 @@ class ResNet(nn.Module):
                     # Get predictions
                     _, preds = torch.max(outputs.data, 1)
 
-                elif classifier == 'svm':
+                elif classifier in ['svm', 'knn']:
                     features = self.forward(images, get_only_features=True)
 
                     # Bring tensor to CPU to transform it into a numpy array
                     features = features.cpu().detach().numpy()
-                    print(features.shape)
 
-                    preds = self.clf.predict(features)
+                    preds = self.clf[classifier].predict(features)
                     preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
 
                 else:
