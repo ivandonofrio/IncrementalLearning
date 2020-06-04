@@ -390,7 +390,7 @@ class ResNet(nn.Module):
             print(f'Storing {batch} exemplars per class...')
 
             # Collect incoming images and labels as (PIL, label) tuple
-            incoming_data = images
+            incoming_data = [(image, label) for image, label in images]
             self.processed_images += len(incoming_data)
 
             # Store new PIL images and labels
@@ -418,6 +418,7 @@ class ResNet(nn.Module):
             for label in self.exemplars.keys():
 
                 # Get current mean and features
+                print(len(self.get_mean_representation(self.exemplars[label]['tensors'])))
                 features, mean = self.get_mean_representation(self.exemplars[label]['tensors'])
                 mean /= torch.norm(mean)
 
