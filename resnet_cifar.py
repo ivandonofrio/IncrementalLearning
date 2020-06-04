@@ -385,13 +385,14 @@ class ResNet(nn.Module):
             # Handle dimension
             new_classes = []
 
-            bound = counter = min(self.k, self.processed_images)
-            batch = bound // len(self.learned_classes)
-            print(f'Storing {batch} exemplars per class...')
-
             # Collect incoming images and labels as (PIL, label) tuple
             incoming_data = [(image, label) for image, label in images]
             self.processed_images += len(incoming_data)
+
+            # Compute bound and class batch size
+            bound = counter = min(self.k, self.processed_images)
+            batch = bound // len(self.learned_classes)
+            print(f'Storing {batch} exemplars per class...')
 
             # Store new PIL images and labels
             for image, label in incoming_data:
