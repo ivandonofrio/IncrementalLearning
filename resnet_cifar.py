@@ -201,7 +201,6 @@ class ResNet(nn.Module):
             return x
 
         x = self.fc(x)
-
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
@@ -247,6 +246,7 @@ class ResNet(nn.Module):
             total_training = 0
             # for images, labels in train_dataloader:
             for images, labels in loader:
+
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
@@ -316,9 +316,17 @@ class ResNet(nn.Module):
         self = self.to(DEVICE)
 
         with torch.no_grad():
-            self.eval()     # Sets the module in evaluation mode
 
-            dataloader = DataLoader(LabelledDataset(dataset, transform), batch_size=self.batch_size, shuffle=False, num_workers=4)
+            # Network in evaluation mode
+            self.eval()
+
+            # Generate dataloader from current dataset
+            dataloader = DataLoader(
+                LabelledDataset(dataset, transform),
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=4
+            )
 
             correct_predictions = 0
             total_predictions = 0
@@ -361,13 +369,14 @@ class ResNet(nn.Module):
 
             # Handle dimension
             new_classes = []
-            incoming_data = [(x[0],x[1]) for x in images]		# (PIL, label)
-            first_iteration = self.processed_images == 0
             self.processed_images += len(incoming_data)
 
             bound = counter = min(self.k, self.processed_images)
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
+
+            # Collect incoming images and labels as (PIL, label) tuple
+            incoming_data = [(image[0], image[1]) for image in images]
 
             # Store new PIL images and labels
             for image, label in incoming_data:
@@ -382,8 +391,14 @@ class ResNet(nn.Module):
                     new_classes.append(label)
 
                 # Convert to tensor and normalize
+                tensor = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                ])(image)
+
+                # Store current image and tensor
                 self.exemplars[label]['exemplars'].append(image)
-                self.exemplars[label]['tensors'].append(transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])(image))
+                self.exemplars[label]['tensors'].append(tensor)
 
             for label in self.exemplars.keys():
 
@@ -397,7 +412,7 @@ class ResNet(nn.Module):
                     # Get random indices sample
                     index_sample = random.sample(list(range(batch)), min(batch, counter))
 
-                    # Random subset of exemplars and representation
+                    # Random subset of exemplars, representation and tensors
                     selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in index_sample]
                     selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in index_sample]
                     selected_representations = [el for i, el in enumerate(features) if i in index_sample]
@@ -405,6 +420,7 @@ class ResNet(nn.Module):
                 elif policy == 'norm':
 
                     if label in new_classes:
+
                         # Store class exemplars
                         current_exemplars = self.exemplars[label]['exemplars'].copy()
                         current_tensors = self.exemplars[label]['tensors'].copy()
@@ -451,6 +467,7 @@ class ResNet(nn.Module):
                             del current_representations[index], current_exemplars[index], current_tensors[index]
 
                     else:
+
                         # If not new class only select best representations
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
                         selected_tensors = self.exemplars[label]['tensors'][:batch]
