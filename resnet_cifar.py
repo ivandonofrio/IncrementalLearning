@@ -11,6 +11,7 @@ import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
+from torchvision import transforms
 
 DEVICE = 'cuda'
 
@@ -102,19 +103,25 @@ class LabelledDataset(Dataset):
     Arguments:
         data (list of tuples (image, label)): list of labelled images
     '''
-    def __init__(self, data):
+    def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
         self.images = []
         self.labels = []
         for x in data:
             self.images.append(x[0])
             self.labels.append(x[1])
+        self.transform = transform
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        return self.images[idx], self.labels[idx]
+        image, label = self.images[idx], self.labels[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
 
 
 class ResNet(nn.Module):
@@ -197,7 +204,7 @@ class ResNet(nn.Module):
 
         return x
 
-    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random'):
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
@@ -217,17 +224,14 @@ class ResNet(nn.Module):
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
-        training_images = []
-        training_classes = []
-
-        dataset = train_dataset
+        dataset = LabelledDataset(train_dataset, transform)
         if self.use_exemplars:
             # Merge new training image and exemplars
             exemplars_dataset = []
             for label in self.exemplars.keys():
                 for image in self.exemplars[label]['exemplars']:
                     exemplars_dataset.append((image, label))
-            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset)])
+            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
 
@@ -273,13 +277,6 @@ class ResNet(nn.Module):
                     with torch.no_grad():
                         # Store new classes and images
                         c = [l.item() for l in labels]
-
-                        if self.use_exemplars:
-                            # Don't store existing exemplars
-                            for image, label in zip(images, labels):
-                                if label.item() not in self.learned_classes:
-                                    training_images.append(image.data.cpu())
-                                    training_classes.append(label.item())
                         current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
@@ -310,19 +307,18 @@ class ResNet(nn.Module):
 
             # Store exemplars
             if self.use_exemplars:
-                # self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
-                self.store_exemplars(training_classes, training_images, policy=policy)
+                self.store_exemplars(train_dataset, policy=policy)
 
         return epochs_stats
 
-    def perform_test(self, dataset):
+    def perform_test(self, dataset, transform=None):
 
         self = self.to(DEVICE)
 
         with torch.no_grad():
             self.eval()     # Sets the module in evaluation mode
 
-            dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            dataloader = DataLoader(LabelledDataset(dataset, transform), batch_size=self.batch_size, shuffle=False, num_workers=4)
 
             correct_predictions = 0
             total_predictions = 0
@@ -357,15 +353,15 @@ class ResNet(nn.Module):
 
         return accuracy, prediction_history
 
-    # def store_exemplars(self, classes, images, discovered_classes, policy='random'):
-    def store_exemplars(self, classes, images, policy='random'):
+    def store_exemplars(self, images, policy='random'):
 
         self.eval()
 
         with torch.no_grad():
 
-            # Handle dimensions
-            incoming_data = list(zip(images, classes))
+            # Handle dimension
+            new_classes = []
+            incoming_data = [(x[0],x[1]) for x in images]		# (PIL, label)
             first_iteration = self.processed_images == 0
             self.processed_images += len(incoming_data)
 
@@ -373,24 +369,26 @@ class ResNet(nn.Module):
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
-            # new_classes = {label:(True if label in discovered_classes else False) for label in self.learned_classes}
-
-            # Store new images and labels
+            # Store new PIL images and labels
             for image, label in incoming_data:
 
                 if label not in self.exemplars:
                     self.exemplars[label] = {
                         'mean': None,
                         'exemplars': [],
+                        'tensors': [],
                         'representation': []
                     }
+                    new_classes.append(label)
 
+                # Convert to tensor and normalize
                 self.exemplars[label]['exemplars'].append(image)
+                self.exemplars[label]['tensors'].append(transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])(image))
 
             for label in self.exemplars.keys():
 
                 # Get current mean and features
-                features, mean = self.get_mean_representation(self.exemplars[label]['exemplars'])
+                features, mean = self.get_mean_representation(self.exemplars[label]['tensors'])
                 mean /= torch.norm(mean)
 
                 # Store only m exemplars with different policies
@@ -401,19 +399,20 @@ class ResNet(nn.Module):
 
                     # Random subset of exemplars and representation
                     selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in index_sample]
+                    selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in index_sample]
                     selected_representations = [el for i, el in enumerate(features) if i in index_sample]
 
                 elif policy == 'norm':
 
-                    # if new_classes[label]:
-                    if label in classes:
-                        # print(f'class {label} is new')
+                    if label in new_classes:
                         # Store class exemplars
                         current_exemplars = self.exemplars[label]['exemplars'].copy()
+                        current_tensors = self.exemplars[label]['tensors'].copy()
                         current_representations = features.copy()
 
                         # Initialise features and exemplars subset collection
                         selected_examplars = []
+                        selected_tensors = []
                         selected_representations = []
 
                         # Setup incremental features collector
@@ -442,21 +441,23 @@ class ResNet(nn.Module):
 
                             # Update selection with nearest exemplar and representation
                             selected_examplars.append(current_exemplars[index])
+                            selected_tensors.append(current_tensors[index])
                             selected_representations.append(current_representations[index])
 
                             # Update representation sum
                             incremental_features_sum += selected_representations[-1]
 
                             # Remove elements from representations and exemplars sets
-                            del current_representations[index], current_exemplars[index]
+                            del current_representations[index], current_exemplars[index], current_tensors[index]
 
                     else:
-                        # print(f'class {label} is old')
                         # If not new class only select best representations
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
+                        selected_tensors = self.exemplars[label]['tensors'][:batch]
                         selected_representations = features[:batch]
 
                 self.exemplars[label]['exemplars'] = selected_examplars
+                self.exemplars[label]['tensors'] = selected_tensors
                 self.exemplars[label]['representation'] = selected_representations
                 self.exemplars[label]['mean'] = mean
 
@@ -471,11 +472,8 @@ class ResNet(nn.Module):
         with torch.no_grad():
             maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().detach().squeeze() for exemplar in exemplars]
             maps = [map/map.norm() for map in maps]
-            # maps = self.forward(torch.stack(exemplars).to(DEVICE), get_only_features=True).cpu()
-            # maps = F.normalize(maps)
 
         return maps, torch.stack(maps).mean(0).squeeze()
-        # return maps, torch.mean(maps, dim=0)
 
     def get_nearest_classes(self, images):
 
@@ -483,13 +481,11 @@ class ResNet(nn.Module):
         with torch.no_grad():
 
             features = self.forward(images, get_only_features=True).detach()
-            # features = [map/torch.norm(map) for map in features]
             features = F.normalize(features)
             preds = []
 
             for map in features:
 
-                # dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
                 dst = {label: (map - self.exemplars[label]['mean'].to(DEVICE)).pow(2).sum() for label in self.exemplars.keys()}
                 pred = min(dst, key=dst.get)
                 preds.append(pred)
