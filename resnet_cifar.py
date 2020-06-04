@@ -130,7 +130,7 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
 
         self.inplanes = 16
-        
+
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
@@ -391,7 +391,7 @@ class ResNet(nn.Module):
             print(f'Storing {batch} exemplars per class...')
 
             # Collect incoming images and labels as (PIL, label) tuple
-            incoming_data = [(image[0], image[1]) for image in images]
+            incoming_data = images
 
             # Store new PIL images and labels
             for image, label in incoming_data:
