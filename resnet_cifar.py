@@ -127,8 +127,10 @@ class LabelledDataset(Dataset):
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000):
-        self.inplanes = 16
         super(ResNet, self).__init__()
+
+        self.inplanes = 16
+        
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
@@ -168,7 +170,9 @@ class ResNet(nn.Module):
         self.exemplars = {}
 
     def _make_layer(self, block, planes, blocks, stride=1):
+
         downsample = None
+
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
@@ -179,6 +183,7 @@ class ResNet(nn.Module):
         layers = []
         layers.append(block(self.inplanes, planes, stride, downsample))
         self.inplanes = planes * block.expansion
+
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes))
 
@@ -204,10 +209,17 @@ class ResNet(nn.Module):
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
+
+        # Setting up training framework
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
 
+        # Setting up data structures for statistics
+        epochs_stats = {}
+        last_time = time.time()
+
+        # Check if a previous state must be loaded
         if state_dict:
             self.load_state_dict(state_dict)
 
@@ -217,25 +229,29 @@ class ResNet(nn.Module):
             for p in old.parameters():
                 p.requires_grad = False
 
-        epochs_stats = {}
-        last_time = time.time()
-
+        # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
+        # Generate and load training dataset
         dataset = LabelledDataset(train_dataset, transform)
         if self.use_exemplars:
+
             # Merge new training image and exemplars
             exemplars_dataset = []
+
             for label in self.exemplars.keys():
                 for image in self.exemplars[label]['exemplars']:
                     exemplars_dataset.append((image, label))
+
             dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
 
         for epoch in range(self.num_epochs):
             if verbose:
+
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
                     total_loss if len(epochs_stats) > 0 else -1,
@@ -244,7 +260,7 @@ class ResNet(nn.Module):
 
             total_loss = 0.0
             total_training = 0
-            # for images, labels in train_dataloader:
+
             for images, labels in loader:
 
                 images = images.to(DEVICE)
@@ -261,6 +277,7 @@ class ResNet(nn.Module):
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
+
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
@@ -275,6 +292,7 @@ class ResNet(nn.Module):
 
                 if epoch == 0:
                     with torch.no_grad():
+
                         # Store new classes and images
                         c = [l.item() for l in labels]
                         current_classes.update(c)
@@ -283,12 +301,16 @@ class ResNet(nn.Module):
                 loss.backward()  # backward pass: computes gradients
                 optimizer.step() # update weights based on accumulated gradients
 
+            # Store loss
             total_loss = total_loss/total_training
+
+            # Update statistics
             epochs_stats[epoch] = {
                 'loss': total_loss,
                 'learning_rate': scheduler.get_last_lr(),
                 'elapsed_time': time.time() - last_time
             }
+
             last_time = time.time()
 
             # Evaluate accuracy on validation set if verbose at each validation step
@@ -299,7 +321,7 @@ class ResNet(nn.Module):
             # Step the scheduler
             scheduler.step()
 
-	      # Update learned classes
+        # Update learned classes
         with torch.no_grad():
 
             self.learned_classes.update(current_classes)
@@ -314,7 +336,6 @@ class ResNet(nn.Module):
     def perform_test(self, dataset, transform=None):
 
         self = self.to(DEVICE)
-
         with torch.no_grad():
 
             # Network in evaluation mode
@@ -339,14 +360,9 @@ class ResNet(nn.Module):
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
                 if self.ncm:
-                    # print('Classifying with NCM...')
                     preds = self.get_nearest_classes(images)
                 else:
-                    # print('Classifying with FC layer...')
-                    # Forward Pass
                     outputs = self.forward(images)
-
-                    # Get predictions
                     _, preds = torch.max(outputs.data, 1)
 
                 # Update Corrects
@@ -358,7 +374,6 @@ class ResNet(nn.Module):
 
         # Calculate Accuracy
         accuracy = correct_predictions / float(total_predictions)
-
         return accuracy, prediction_history
 
     def store_exemplars(self, images, policy='random'):
