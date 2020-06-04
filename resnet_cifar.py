@@ -1,15 +1,17 @@
 import math
 import time
 import random
+
 from copy import deepcopy
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import torch.utils.model_zoo as model_zoo
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
+from torchvision import transforms
 
 DEVICE = 'cuda'
 
@@ -101,26 +103,34 @@ class LabelledDataset(Dataset):
     Arguments:
         data (list of tuples (image, label)): list of labelled images
     '''
-    def __init__(self, data):
+    def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
         self.images = []
         self.labels = []
         for x in data:
             self.images.append(x[0])
             self.labels.append(x[1])
+        self.transform = transform
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        return self.images[idx], self.labels[idx]
+        image, label = self.images[idx], self.labels[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
 
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, use_exemplars, num_classes=10, k=5000):
-        self.inplanes = 16
+    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000):
         super(ResNet, self).__init__()
+
+        self.inplanes = 16
+
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
@@ -136,7 +146,7 @@ class ResNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-		
+
         # Hyperparameters
         self.num_classes = num_classes
         self.batch_size = parameters['BATCH_SIZE']
@@ -150,6 +160,7 @@ class ResNet(nn.Module):
         # Set utils structures
         self.lwf = lwf
         self.use_exemplars = use_exemplars
+        self.ncm = ncm
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
@@ -157,10 +168,11 @@ class ResNet(nn.Module):
 
         # Exemplars structure
         self.exemplars = {}
-        self.exemplars_dataset = []
 
     def _make_layer(self, block, planes, blocks, stride=1):
+
         downsample = None
+
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
@@ -171,6 +183,7 @@ class ResNet(nn.Module):
         layers = []
         layers.append(block(self.inplanes, planes, stride, downsample))
         self.inplanes = planes * block.expansion
+
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes))
 
@@ -193,14 +206,20 @@ class ResNet(nn.Module):
             return x
 
         x = self.fc(x)
-
         return x
-		
-    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10):
+
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
+
+        # Setting up training framework
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
 
+        # Setting up data structures for statistics
+        epochs_stats = {}
+        last_time = time.time()
+
+        # Check if a previous state must be loaded
         if state_dict:
             self.load_state_dict(state_dict)
 
@@ -209,25 +228,30 @@ class ResNet(nn.Module):
             old = deepcopy(self)
             for p in old.parameters():
                 p.requires_grad = False
-        
-        epochs_stats = {}
-        last_time = time.time()
-        
+
+        # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
-        training_images = []
-        training_classes = []
-
-        dataset = train_dataset
+        # Generate and load training dataset
+        dataset = LabelledDataset(train_dataset, transform)
         if self.use_exemplars:
+
             # Merge new training image and exemplars
-            dataset = ConcatDataset([dataset, LabelledDataset(self.exemplars_dataset)])
+            exemplars_dataset = []
+
+            for label in self.exemplars.keys():
+                for image in self.exemplars[label]['exemplars']:
+                    exemplars_dataset.append((image, label))
+
+            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
-        
+
         for epoch in range(self.num_epochs):
             if verbose:
+
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
                     total_loss if len(epochs_stats) > 0 else -1,
@@ -236,8 +260,9 @@ class ResNet(nn.Module):
 
             total_loss = 0.0
             total_training = 0
-            # for images, labels in train_dataloader:
+
             for images, labels in loader:
+
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
@@ -252,6 +277,7 @@ class ResNet(nn.Module):
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
+
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
@@ -259,34 +285,32 @@ class ResNet(nn.Module):
 
                     # Include old predictions for distillation
                     target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
-				
+
                 loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
                 if epoch == 0:
                     with torch.no_grad():
+
                         # Store new classes and images
                         c = [l.item() for l in labels]
-
-                        if self.use_exemplars:
-                            # Don't store existing exemplars
-                            for image, label in zip(images, labels):
-                                if label.item() not in self.learned_classes:
-                                    training_images.append(image.data.cpu())
-                                    training_classes.append(label.item())
                         current_classes.update(c)
 
                 # Compute gradients for each layer and update weights
                 loss.backward()  # backward pass: computes gradients
                 optimizer.step() # update weights based on accumulated gradients
 
+            # Store loss
             total_loss = total_loss/total_training
+
+            # Update statistics
             epochs_stats[epoch] = {
                 'loss': total_loss,
                 'learning_rate': scheduler.get_last_lr(),
                 'elapsed_time': time.time() - last_time
             }
+
             last_time = time.time()
 
             # Evaluate accuracy on validation set if verbose at each validation step
@@ -297,26 +321,33 @@ class ResNet(nn.Module):
             # Step the scheduler
             scheduler.step()
 
-		    # Update learned classes
+        # Update learned classes
         with torch.no_grad():
+
             self.learned_classes.update(current_classes)
             self.iterations += 1
-            
+
             # Store exemplars
             if self.use_exemplars:
-                # print(f'Received {len(train_dataset)} images')
-                # print(f'Sending {len(training_images)} for exemplars...')
-                self.store_exemplars(training_classes, training_images)
-        
-        return epochs_stats
-      
-    def perform_test(self, dataset):
-        self = self.to(DEVICE)
-        
-        with torch.no_grad():
-            self.eval() # Sets the module in evaluation mode
+                self.store_exemplars(train_dataset, policy=policy)
 
-            dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        return epochs_stats
+
+    def perform_test(self, dataset, transform=None):
+
+        self = self.to(DEVICE)
+        with torch.no_grad():
+
+            # Network in evaluation mode
+            self.eval()
+
+            # Generate dataloader from current dataset
+            dataloader = DataLoader(
+                LabelledDataset(dataset, transform),
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=4
+            )
 
             correct_predictions = 0
             total_predictions = 0
@@ -328,11 +359,11 @@ class ResNet(nn.Module):
             for images, labels in dataloader:
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
-                # Forward Pass
-                outputs = self.forward(images)
-
-                # Get predictions
-                _, preds = torch.max(outputs.data, 1)
+                if self.ncm:
+                    preds = self.get_nearest_classes(images)
+                else:
+                    outputs = self.forward(images)
+                    _, preds = torch.max(outputs.data, 1)
 
                 # Update Corrects
                 correct_predictions += torch.sum(preds == labels.data).data.item()
@@ -343,66 +374,168 @@ class ResNet(nn.Module):
 
         # Calculate Accuracy
         accuracy = correct_predictions / float(total_predictions)
-
         return accuracy, prediction_history
 
-    def store_exemplars(self, classes, images):
+    def store_exemplars(self, images, policy='random'):
+
         self.eval()
-        self.exemplars_dataset = []
+
         with torch.no_grad():
-            # Handle dimensions
-            incoming_data = list(zip(images, classes))
+
+            # Handle dimension
+            new_classes = []
+
+            # Collect incoming images and labels as (PIL, label) tuple
+            incoming_data = images
             self.processed_images += len(incoming_data)
 
+            # Compute bound and class batch size
             bound = counter = min(self.k, self.processed_images)
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
+            # Store new PIL images and labels
             for image, label in incoming_data:
 
                 if label not in self.exemplars:
                     self.exemplars[label] = {
                         'mean': None,
-                        'exemplars': []
+                        'exemplars': [],
+                        'tensors': [],
+                        'representation': []
                     }
+                    new_classes.append(label)
 
+                # Convert to tensor and normalize
+                tensor = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                ])(image)
+
+                # Store current image and tensor
                 self.exemplars[label]['exemplars'].append(image)
+                self.exemplars[label]['tensors'].append(tensor)
 
             for label in self.exemplars.keys():
 
-                # Using all images store mean
-                features = self.get_mean_representation(self.exemplars[label]['exemplars'])
-                self.exemplars[label]['mean'] = torch.mean(torch.stack(features), 0, keepdim=True)
+                # Get current mean and features
+                features, mean = self.get_mean_representation(self.exemplars[label]['tensors'])
+                mean /= torch.norm(mean)
 
-                # Store only m exemplars
-                # print(f'class {label}: {len(self.exemplars[label]["exemplars"])} exemplars, take {min(batch, counter)}\t(batch={batch}, counter={counter})')
-                self.exemplars[label]['exemplars'] = random.sample(self.exemplars[label]['exemplars'], min(batch, counter))
-                self.exemplars_dataset += [(image.cpu(), label) for image in self.exemplars[label]['exemplars']]
+                # Store only m exemplars with different policies
+                if policy == 'random':
+
+                    # Get random indices sample
+                    index_sample = random.sample(list(range(batch)), min(batch, counter))
+
+                    # Random subset of exemplars, representation and tensors
+                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in index_sample]
+                    selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in index_sample]
+                    selected_representations = [el for i, el in enumerate(features) if i in index_sample]
+
+                elif policy == 'norm':
+
+                    if label in new_classes:
+
+                        # Store class exemplars
+                        current_exemplars = self.exemplars[label]['exemplars'].copy()
+                        current_tensors = self.exemplars[label]['tensors'].copy()
+                        current_representations = features.copy()
+
+                        # Initialise features and exemplars subset collection
+                        selected_examplars = []
+                        selected_tensors = []
+                        selected_representations = []
+
+                        # Setup incremental features collector
+                        incremental_features_sum = torch.FloatTensor(len(features[0]) * [0])
+
+                        while len(selected_examplars) < batch and len(current_exemplars) > 0:
+
+                            # Store norms from current mean
+                            norms = []
+
+                            # Associate each representation to its distance from mean
+                            for index, image in enumerate(current_exemplars):
+
+                                # Sum current image and
+                                feature = current_representations[index]
+
+                                scaled_features_sum = (feature + incremental_features_sum)/(len(selected_examplars) + 1)
+                                scaled_features_sum /= scaled_features_sum.norm()
+
+                                # Get norm of difference
+                                diff_norm = (mean - scaled_features_sum).norm()
+                                norms.append(diff_norm)
+
+                            # Get index of min distance
+                            index = norms.index(min(norms))
+
+                            # Update selection with nearest exemplar and representation
+                            selected_examplars.append(current_exemplars[index])
+                            selected_tensors.append(current_tensors[index])
+                            selected_representations.append(current_representations[index])
+
+                            # Update representation sum
+                            incremental_features_sum += selected_representations[-1]
+
+                            # Remove elements from representations and exemplars sets
+                            del current_representations[index], current_exemplars[index], current_tensors[index]
+
+                    else:
+
+                        # If not new class only select best representations
+                        selected_examplars = self.exemplars[label]['exemplars'][:batch]
+                        selected_tensors = self.exemplars[label]['tensors'][:batch]
+                        selected_representations = features[:batch]
+
+                self.exemplars[label]['exemplars'] = selected_examplars
+                self.exemplars[label]['tensors'] = selected_tensors
+                self.exemplars[label]['representation'] = selected_representations
+                self.exemplars[label]['mean'] = mean
 
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
 
-        self.train(False)
-        # print('Getting mean representation...')
+        # Returns image features for current network and their non-normalized mean
+        self.eval()
 
         # Extract maps from network
         with torch.no_grad():
-            maps = [self.forward(torch.stack([exemplar.cuda()]), get_only_features=True).cpu() for exemplar in exemplars]
+            maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().detach().squeeze() for exemplar in exemplars]
+            maps = [map/map.norm() for map in maps]
 
-        return maps
+        return maps, torch.stack(maps).mean(0).squeeze()
 
-def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+    def get_nearest_classes(self, images):
+
+        self.eval()
+        with torch.no_grad():
+
+            features = self.forward(images, get_only_features=True).detach()
+            features = F.normalize(features)
+            preds = []
+
+            for map in features:
+
+                dst = {label: (map - self.exemplars[label]['mean'].to(DEVICE)).pow(2).sum() for label in self.exemplars.keys()}
+                pred = min(dst, key=dst.get)
+                preds.append(pred)
+
+        return torch.Tensor(preds).to(DEVICE)
+
+def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, **kwargs):
+def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
     return model
