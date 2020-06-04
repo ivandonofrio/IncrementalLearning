@@ -310,7 +310,8 @@ class ResNet(nn.Module):
 
             # Store exemplars
             if self.use_exemplars:
-                self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
+                # self.store_exemplars(training_classes, training_images, set(current_classes), policy=policy)
+                self.store_exemplars(training_classes, training_images, policy=policy)
 
         return epochs_stats
 
@@ -356,7 +357,8 @@ class ResNet(nn.Module):
 
         return accuracy, prediction_history
 
-    def store_exemplars(self, classes, images, discovered_classes, policy='random'):
+    # def store_exemplars(self, classes, images, discovered_classes, policy='random'):
+    def store_exemplars(self, classes, images, policy='random'):
 
         self.eval()
 
@@ -371,8 +373,9 @@ class ResNet(nn.Module):
             batch = bound // len(self.learned_classes)
             print(f'Storing {batch} exemplars per class...')
 
-            new_classes = {label:(True if label in discovered_classes else False) for label in self.learned_classes}
+            # new_classes = {label:(True if label in discovered_classes else False) for label in self.learned_classes}
 
+            # Store new images and labels
             for image, label in incoming_data:
 
                 if label not in self.exemplars:
@@ -402,8 +405,9 @@ class ResNet(nn.Module):
 
                 elif policy == 'norm':
 
-                    if new_classes[label]:
-
+                    # if new_classes[label]:
+                    if label in classes:
+                        # print(f'class {label} is new')
                         # Store class exemplars
                         current_exemplars = self.exemplars[label]['exemplars'].copy()
                         current_representations = features.copy()
@@ -447,7 +451,7 @@ class ResNet(nn.Module):
                             del current_representations[index], current_exemplars[index]
 
                     else:
-
+                        # print(f'class {label} is old')
                         # If not new class only select best representations
                         selected_examplars = self.exemplars[label]['exemplars'][:batch]
                         selected_representations = features[:batch]
@@ -461,27 +465,32 @@ class ResNet(nn.Module):
     def get_mean_representation(self, exemplars):
 
         # Returns image features for current network and their non-normalized mean
-        self.train(False)
+        self.eval()
 
         # Extract maps from network
         with torch.no_grad():
-            maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().squeeze() for exemplar in exemplars]
+            maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().detach().squeeze() for exemplar in exemplars]
             maps = [map/map.norm() for map in maps]
+            # maps = self.forward(torch.stack(exemplars).to(DEVICE), get_only_features=True).cpu()
+            # maps = F.normalize(maps)
 
         return maps, torch.stack(maps).mean(0).squeeze()
+        # return maps, torch.mean(maps, dim=0)
 
     def get_nearest_classes(self, images):
 
         self.eval()
         with torch.no_grad():
 
-            features = self.forward(images, get_only_features=True)
-            features = [map/torch.norm(map) for map in features]
+            features = self.forward(images, get_only_features=True).detach()
+            # features = [map/torch.norm(map) for map in features]
+            features = F.normalize(features)
             preds = []
 
             for map in features:
 
-                dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
+                # dst = {label: torch.norm(map - self.exemplars[label]['mean'].to(DEVICE)) for label in self.exemplars.keys()}
+                dst = {label: (map - self.exemplars[label]['mean'].to(DEVICE)).pow(2).sum() for label in self.exemplars.keys()}
                 pred = min(dst, key=dst.get)
                 preds.append(pred)
 
