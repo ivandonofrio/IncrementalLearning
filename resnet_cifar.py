@@ -499,38 +499,39 @@ class ResNet(nn.Module):
                     current_representations = features.copy()
 
                     # Each tensor as input of the algorithm
-                    X = [tensor.cpu().numpy() for tensor in current_tensors]
+                    # Each tensor as input of the algorithm
+                    X = [tensor.cpu().numpy() for tensor in current_representations]
 
-                    cluster = DBSCAN(eps=.4, min_samples=4, n_jobs=4).fit(X)
-                    print(len(cluster.labels_), cluster.labels_)
-                    labels_dict = {labels:([]) for label in cluster.labels_}
-                    print(labels_dict)
+                    cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
+                    #print(len(cluster.labels_), cluster.labels_)
+                    labels_dict = {lbl:([]) for lbl in cluster.labels_}
+                    #print(labels_dict)
 
                     external_points = 0
                     valid_points = 0
-                    print(external_points, valid_points)
-                    for index, label in enumerate(cluster.labels_):
+                    for index, lbl in enumerate(cluster.labels_):
 
-                        labels_dict[label].append(index)
+                        labels_dict[lbl].append(index)
 
-                        if label != -1:
+                        if lbl != -1:
                             valid_points += 1
                         else:
                             external_points += 1
 
+                    #print(external_points, valid_points)
                     # Generate collection of images
-                    collection = [(label, indices) for label, indices in labels_dict.items()]
+                    collection = [(lbl, indices) for lbl, indices in labels_dict.items()]
                     sorted(collection, key=lambda pair: len(pair[1]), reverse=True)
-                    print(collection)
+                    #print(collection)
 
                     iter = 0
                     indices = []
                     while len(indices) < batch and valid_points + external_points > 0:
 
                         index = iter % len(collection)
-                        label, elements = collection[index]
+                        lbl, elements = collection[index]
 
-                        if label != -1 and valid_points > 0:
+                        if lbl != -1 and valid_points > 0:
 
                             if len(elements) > 0:
                                 indices.append(elements.pop())
@@ -538,10 +539,10 @@ class ResNet(nn.Module):
 
                             iter += 1
 
-                        elif label == -1 and valid_points <= 0:
+                        elif lbl == -1 and valid_points <= 0:
                             indices.append(elements.pop())
                             external_points -= 1
-                        else
+                        else:
                             iter += 1
 
                     print(len(indices), indices)
