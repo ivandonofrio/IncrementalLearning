@@ -349,7 +349,7 @@ class ResNet(nn.Module):
 
         return epochs_stats
 
-    def perform_test(self, dataset, classifier = 'fc', **classifier_kwargs):
+    def perform_test(self, dataset, transform=None, classifier='fc', **classifier_kwargs):
         """
         :param classifier: 'fc', 'ncm', 'svm', 'knn'
         """
