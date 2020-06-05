@@ -508,18 +508,18 @@ class ResNet(nn.Module):
                         #cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
                         cluster = AffinityPropagation().fit(X)
 
-                        print(len(cluster.cluster_centers_))
+                        #print(len(cluster.cluster_centers_))
 
                         best_representative = list(map(lambda i, x: (i, [np.linalg.norm(x - center) for center in cluster.cluster_centers_]), X, range(len(X))))
                         #best_representative = list(zip(range(len(X)), best_representative))
                         best_representative = [(index, min(values)) for index, values in best_representative]
                         sorted(best_representative, key=lambda pair: pair[1])
 
-                        print(best_representative)
+                        #print(best_representative)
 
                         indices = [index for value, index in best_representative][:batch]
 
-                        print(indices)
+                        #print(indices)
 
                         selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
                         selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
