@@ -491,23 +491,47 @@ class ResNet(nn.Module):
 
                 elif policy == 'clustering':
 
-                    from sklearn.cluster import DBSCAN
+                    if label in new_classes:
 
-                    # Store class exemplars
-                    current_exemplars = self.exemplars[label]['exemplars'].copy()
-                    current_tensors = self.exemplars[label]['tensors'].copy()
-                    current_representations = features.copy()
+                        from sklearn.cluster import DBSCAN, AffinityPropagation
 
-                    # Each tensor as input of the algorithm
-                    # Each tensor as input of the algorithm
-                    X = [tensor.cpu().numpy() for tensor in current_representations]
+                        # Store class exemplars
+                        current_exemplars = self.exemplars[label]['exemplars'].copy()
+                        current_tensors = self.exemplars[label]['tensors'].copy()
+                        current_representations = features.copy()
 
-                    cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
-                    #print(len(cluster.labels_), cluster.labels_)
-                    labels_dict = {lbl:([]) for lbl in cluster.labels_}
-                    #print(labels_dict)
+                        # Each tensor as input of the algorithm
+                        # Each tensor as input of the algorithm
+                        X = [tensor.cpu().numpy() for tensor in current_representations]
 
-                    external_points = 0
+                        #cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
+                        cluster = AffinityPropagation().fit(X)
+
+                        pritn(len(cluster.cluster_center_))
+
+                        best_representative = list(map(lambda i, x: (i, [np.linalg.norm(x - center) for center in cluster.cluster_center_]), X, range(len(X))))
+                        #best_representative = list(zip(range(len(X)), best_representative))
+                        best_representative = [(index, min(values)) for index, values in best_representative]
+                        sorted(best_representative, key=lambda pair: pair[1])
+
+                        print(best_representative)
+
+                        indices = [index for index, value in best_representative][:batch]
+
+                        print(indices)
+
+                        selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
+                        selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
+                        selected_representations = [el for i, el in enumerate(features) if i in indices]
+
+                    else:
+
+                        # If not new class only select best representations
+                        selected_examplars = self.exemplars[label]['exemplars'][:batch]
+                        selected_tensors = self.exemplars[label]['tensors'][:batch]
+                        selected_representations = features[:batch]
+
+                    """external_points = 0
                     valid_points = 0
                     for index, lbl in enumerate(cluster.labels_):
 
@@ -545,12 +569,12 @@ class ResNet(nn.Module):
                         else:
                             iter += 1
 
-                    print(len(indices), indices)
+                    print(len(indices), indices)"""
 
                     # Initialise features and exemplars subset collection
-                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
-                    selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
-                    selected_representations = [el for i, el in enumerate(features) if i in indices]
+                    #selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
+                    #selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
+                    #selected_representations = [el for i, el in enumerate(features) if i in indices]
 
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['tensors'] = selected_tensors
