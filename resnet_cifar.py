@@ -11,6 +11,13 @@ import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
+from itertools import chain
+
+# Classifiers
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from torchvision import transforms
 
 DEVICE = 'cuda'
@@ -166,6 +173,11 @@ class ResNet(nn.Module):
         self.k = k
         self.processed_images = 0
 
+        self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
+                        # multiple times without fitting it at each test
+                        # (if no training in the meanwhile)
+                        # key: 'svm' or 'knn', value: the fitted classifier
+
         # Exemplars structure
         self.exemplars = {}
 
@@ -248,13 +260,14 @@ class ResNet(nn.Module):
 
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader)*self.batch_size} images...')
+        total_loss = math.nan
 
         for epoch in range(self.num_epochs):
             if verbose:
 
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
-                    total_loss if len(epochs_stats) > 0 else -1,
+                    total_loss,
                     scheduler.get_last_lr()
                 ))
 
@@ -331,9 +344,50 @@ class ResNet(nn.Module):
             if self.use_exemplars:
                 self.store_exemplars(train_dataset, policy=policy)
 
+        # Reset all classifiers: the fitted ones are not valid anymore
+        self.clf = {}
+
         return epochs_stats
 
-    def perform_test(self, dataset, transform=None):
+    def perform_test(self, dataset, classifier = 'fc', **classifier_kwargs):
+        """
+        :param classifier: 'fc', 'ncm', 'svm', 'knn'
+        """
+
+        # If classifying with SVM or KNN, and that type of classifier is not cached yet
+        if classifier in ['svm', 'knn'] and classifier not in self.csf:
+
+            X_exemplars = []    # List of images
+            X = []  # List of features (one for each image)
+            y = []  # List of labels
+            
+            # Convert dictionary of exemplars into:
+            # - X_exemplars: list of tensors (each tensor is an image)
+            # - y: list of labels
+            for label, value in self.exemplars.items():
+                X_exemplars += value['exemplars']
+                y += [label] * len(value['exemplars'])
+            
+            # Convert X_exemplars: each image will be converted into X to
+            # its features representation
+            for image in DataLoader(X_exemplars):
+                image = image.cuda()
+                features = self.forward(image, get_only_features=True)
+
+                # Bring tensor to CPU to transform it into a numpy array
+                features = features.cpu().detach().numpy()[0]
+
+                X.append(features)
+            
+            
+            if classifier == 'svm':
+                self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
+
+            elif classifier == 'knn':
+                self.clf[classifier] = KNeighborsClassifier(**classifier_kwargs)
+            
+            # Fit the classifier
+            self.clf[classifier].fit(X, y)
 
         self = self.to(DEVICE)
         with torch.no_grad():
@@ -359,11 +413,27 @@ class ResNet(nn.Module):
             for images, labels in dataloader:
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
-                if self.ncm:
-                    preds = self.get_nearest_classes(images)
-                else:
+                if classifier == 'ncm':
+                    if self.ncm:
+                        preds = self.get_nearest_classes(images)
+                    else:
+                        raise ValueError("The model is not trained on NCM")
+
+                elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
+
+                elif classifier in ['svm', 'knn']:
+                    features = self.forward(images, get_only_features=True)
+
+                    # Bring tensor to CPU to transform it into a numpy array
+                    features = features.cpu().detach().numpy()
+
+                    preds = self.clf[classifier].predict(features)
+                    preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
+
+                else:
+                    raise ValueError("Wrong value for argument 'classifier'")
 
                 # Update Corrects
                 correct_predictions += torch.sum(preds == labels.data).data.item()
