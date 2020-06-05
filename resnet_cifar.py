@@ -518,12 +518,15 @@ class ResNet(nn.Module):
                         #print(best_representative)
 
                         indices = [index for value, index in best_representative][:batch]
+                        print(indices)
 
                         #print(indices)
 
                         selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
                         selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
                         selected_representations = [el for i, el in enumerate(features) if i in indices]
+
+                        print(len(selected_examplars), len(selected_tensors), len(selected_representations))
 
                     else:
 
