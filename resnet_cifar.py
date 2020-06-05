@@ -505,8 +505,11 @@ class ResNet(nn.Module):
                         # Each tensor as input of the algorithm
                         X = [tensor.cpu().numpy() for tensor in current_representations]
 
+                        while True:
                         #cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
-                        cluster = AffinityPropagation().fit(X)
+                            cluster = AffinityPropagation().fit(X)
+                            if len(cluster.cluster_centers_) > 0:
+                                break
 
                         #print(len(cluster.cluster_centers_))
 
