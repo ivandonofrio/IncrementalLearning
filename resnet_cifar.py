@@ -494,6 +494,7 @@ class ResNet(nn.Module):
                     if label in new_classes:
 
                         from sklearn.cluster import DBSCAN, AffinityPropagation
+                        import numpy as np
 
                         # Store class exemplars
                         current_exemplars = self.exemplars[label]['exemplars'].copy()
