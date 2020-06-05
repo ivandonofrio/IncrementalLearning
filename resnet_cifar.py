@@ -517,7 +517,7 @@ class ResNet(nn.Module):
 
                         print(best_representative)
 
-                        indices = [index for index, value in best_representative][:batch]
+                        indices = [index for value, index in best_representative][:batch]
 
                         print(indices)
 
