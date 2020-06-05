@@ -489,6 +489,68 @@ class ResNet(nn.Module):
                         selected_tensors = self.exemplars[label]['tensors'][:batch]
                         selected_representations = features[:batch]
 
+                elif policy == 'clustering':
+
+                    from sklearn.cluster import DBSCAN
+
+                    # Store class exemplars
+                    current_exemplars = self.exemplars[label]['exemplars'].copy()
+                    current_tensors = self.exemplars[label]['tensors'].copy()
+                    current_representations = features.copy()
+
+                    # Each tensor as input of the algorithm
+                    X = [tensor.cpu().numpy() for tensor in current_tensors]
+
+                    cluster = DBSCAN(eps=.4, min_samples=4, n_jobs=4).fit(X)
+                    print(len(cluster.labels_), cluster.labels_)
+                    labels_dict = {labels:([]) for label in cluster.labels_}
+                    print(labels_dict)
+
+                    external_points = 0
+                    valid_points = 0
+                    print(external_points, valid_points)
+                    for index, label in enumerate(cluster.labels_):
+
+                        labels_dict[label].append(index)
+
+                        if label != -1:
+                            valid_points += 1
+                        else:
+                            external_points += 1
+
+                    # Generate collection of images
+                    collection = [(label, indices) for label, indices in labels_dict.items()]
+                    sorted(collection, key=lambda pair: len(pair[1]), reverse=True)
+                    print(collection)
+
+                    iter = 0
+                    indices = []
+                    while len(indices) < batch and valid_points + external_points > 0:
+
+                        index = iter % len(collection)
+                        label, elements = collection[index]
+
+                        if label != -1 and valid_points > 0:
+
+                            if len(elements) > 0:
+                                indices.append(elements.pop())
+                                valid_points -= 1
+
+                            iter += 1
+
+                        elif label == -1 and valid_points <= 0:
+                            indices.append(elements.pop())
+                            external_points -= 1
+                        else
+                            iter += 1
+
+                    print(len(indices), indices)
+
+                    # Initialise features and exemplars subset collection
+                    selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
+                    selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
+                    selected_representations = [el for i, el in enumerate(features) if i in indices]
+
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['tensors'] = selected_tensors
                 self.exemplars[label]['representation'] = selected_representations
