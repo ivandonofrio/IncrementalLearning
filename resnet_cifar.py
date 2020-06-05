@@ -505,26 +505,29 @@ class ResNet(nn.Module):
                         # Each tensor as input of the algorithm
                         X = [tensor.cpu().numpy() for tensor in current_representations]
 
-                        while True:
                         #cluster = DBSCAN(eps=.2, min_samples=3, n_jobs=4).fit(X)
-                            cluster = AffinityPropagation().fit(X)
-                            if len(cluster.cluster_centers_) > 0:
-                                break
+                        cluster = AffinityPropagation().fit(X)
+                        if len(cluster.cluster_centers_) > 0:
 
-                        #print(len(cluster.cluster_centers_))
+                            #print(len(cluster.cluster_centers_))
 
-                        best_representative = list(map(lambda x, i: (i, [np.linalg.norm(x - center) for center in cluster.cluster_centers_]), X, range(len(X))))
-                        #best_representative = list(zip(range(len(X)), best_representative))
-                        best_representative = [(index, min(values)) for index, values in best_representative]
+                            best_representative = list(map(lambda x, i: (i, [np.linalg.norm(x - center) for center in cluster.cluster_centers_]), X, range(len(X))))
+                            #best_representative = list(zip(range(len(X)), best_representative))
+                            best_representative = [(index, min(values)) for index, values in best_representative]
 
-                        print(best_representative)
-                        best_representative = sorted(best_representative, key=lambda pair: pair[1])
-                        print(best_representative)
+                            print(best_representative)
+                            best_representative = sorted(best_representative, key=lambda pair: pair[1])
+                            print(best_representative)
 
-                        #print(best_representative)
+                            #print(best_representative)
 
-                        indices = [index for index, value in best_representative][:batch]
-                        print(indices)
+                            indices = [index for index, value in best_representative][:batch]
+                            print(indices)
+
+                        else:
+
+                            # Get random indices sample
+                            indices = random.sample(list(range(batch)), min(batch, counter))
 
                         #print(indices)
 
