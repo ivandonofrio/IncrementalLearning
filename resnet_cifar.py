@@ -355,7 +355,7 @@ class ResNet(nn.Module):
         """
 
         # If classifying with SVM or KNN, and that type of classifier is not cached yet
-        if classifier in ['svm', 'knn'] and classifier not in self.csf:
+        if classifier in ['svm', 'knn'] and classifier not in self.clf:
 
             X_exemplars = []    # List of images
             X = []  # List of features (one for each image)
