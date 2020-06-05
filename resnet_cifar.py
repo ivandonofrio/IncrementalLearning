@@ -515,6 +515,8 @@ class ResNet(nn.Module):
                         best_representative = [(index, min(values)) for index, values in best_representative]
                         sorted(best_representative, key=lambda pair: pair[1])
 
+                        print(best_representative)
+
                         #print(best_representative)
 
                         indices = [index for index, value in best_representative][:batch]
