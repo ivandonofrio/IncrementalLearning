@@ -510,14 +510,14 @@ class ResNet(nn.Module):
 
                         #print(len(cluster.cluster_centers_))
 
-                        best_representative = list(map(lambda i, x: (i, [np.linalg.norm(x - center) for center in cluster.cluster_centers_]), X, range(len(X))))
+                        best_representative = list(map(lambda x, i: (i, [np.linalg.norm(x - center) for center in cluster.cluster_centers_]), X, range(len(X))))
                         #best_representative = list(zip(range(len(X)), best_representative))
-                        best_representative = [(min(values), index) for values, index in best_representative]
-                        sorted(best_representative, key=lambda pair: pair[0])
+                        best_representative = [(index, min(values)) for values, index in best_representative]
+                        sorted(best_representative, key=lambda pair: pair[1])
 
                         #print(best_representative)
 
-                        indices = [index for value, index in best_representative][:batch]
+                        indices = [index for index, value in best_representative][:batch]
                         print(indices)
 
                         #print(indices)
