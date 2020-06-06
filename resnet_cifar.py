@@ -242,7 +242,7 @@ class ResNet(nn.Module):
 				
             if distillation == 'lfc' and self.iterations > 0:
                 # Initialise lambda
-                lmbd = 5 * (10 / len(self.learned_classes))**0.5
+                lmbd = 5 * (len(self.learned_classes) / 10)**0.5
                 print(f'Training with lambda {lmbd}')
 
         # Optimizer and scheduler setup
@@ -318,7 +318,8 @@ class ResNet(nn.Module):
                                 torch.ones(images.shape[0]).to(DEVICE)) * lmbd
 
                 if distillation == 'lfc':
-                    loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
+                    # loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
+                    loss2 = self.criterion(outputs, target)
                     loss = loss1 + loss2
                 else:
                     loss = self.criterion(outputs, target)
