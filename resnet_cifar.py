@@ -215,12 +215,12 @@ class ResNet(nn.Module):
 
         if get_only_features:
             return x
-		f = x.clone().detach()
+        f = x.clone().detach()
 
         x = self.fc(x)
 		
-		if get_also_features:
-			return x, f
+        if get_also_features:
+            return x, f
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, distillation=None, policy='random', transform=None):
@@ -229,10 +229,6 @@ class ResNet(nn.Module):
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
-
-        # Setting up data structures for statistics
-        epochs_stats = {}
-        last_time = time.time()
 
         # Check if a previous state must be loaded
         if state_dict:
@@ -244,9 +240,10 @@ class ResNet(nn.Module):
             for p in old.parameters():
                 p.requires_grad = False
 				
-			if distillation == 'lfc':
-				# Initialise lambda
-				lmbd = 5 * len(self.learned_classes) / 10
+            if distillation == 'lfc' and self.iterations > 0:
+                # Initialise lambda
+                lmbd = 5 * (10 / len(self.learned_classes))**0.5
+                print(f'Training with lambda {lmbd}')
 
         # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
@@ -264,6 +261,10 @@ class ResNet(nn.Module):
                     exemplars_dataset.append((image, label))
 
             dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+
+        # Setting up data structures for statistics
+        epochs_stats = {}
+        last_time = time.time()
 
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
         print(f'Training on {len(loader.dataset)} images...')
@@ -285,7 +286,7 @@ class ResNet(nn.Module):
 
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
-				loss1 = 0.0
+                loss1 = 0.0
 
                 self.train()
 
@@ -294,7 +295,7 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-				# Get also input features for cosine
+				        # Get also input features for cosine
                 outputs, cur_features = self.forward(images, get_also_features=True)
 
                 # Compute loss
@@ -304,23 +305,23 @@ class ResNet(nn.Module):
                     with torch.no_grad():
                         old.eval()
                         output_old = old(images).to(DEVICE)
-						# Get input features according to old network
-						old_features = F.normalize(old(images, get_only_features=True).detach())	
+                        # Get input features according to old network
+                        old_features = F.normalize(old(images, get_only_features=True).detach())	
 
-					if distillation == 'lwf':
-						# Include old predictions for distillation
-						target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
-					if distillation == 'lfc':
-						# Try to preserve direction of old features
-						cur_features = F.normalize(cur_features)
-						loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
-								torch.ones(inputs.shape[0]).to(DEVICE)) * lmbd
+                        if distillation == 'lwf':
+                            # Include old predictions for distillation
+                            target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                        if distillation == 'lfc':
+                            # Try to preserve direction of old features
+                            cur_features = F.normalize(cur_features)
+                            loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
+                                torch.ones(images.shape[0]).to(DEVICE)) * lmbd
 
-				if distillation == 'lfc':
-					loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
-					loss = loss1 + loss2
-				else:
-					loss = self.criterion(outputs, target)
+                if distillation == 'lfc':
+                    loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
+                    loss = loss1 + loss2
+                else:
+                    loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
@@ -613,17 +614,17 @@ class ResNet(nn.Module):
 
         return torch.Tensor(preds).to(DEVICE)
 
-def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+def resnet20(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+def resnet32(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+def resnet56(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
