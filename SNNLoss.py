@@ -25,12 +25,15 @@ class SNNLoss(nn.Module):
         self.eps = eps
         self.std = std
 
-    def forward(self, x, y, temp=None, d=None):  # x 2-D matrix of BxF, y 1-D vector of B
+    def forward(self, x, y, temp=0., d=None):  # x 2-D matrix of BxF, y 1-D vector of B
+        """
+        :param temp: float, log10 of the temperature
+            e.g. if temp=0 ==> temperature=10^0
+        """
         # T = 1/torch.tensor([100.]).to(x.device)
 
         # SE LA TEMPERATURA NON E' SPECIFICATA SETTALA A 0 -> 10^0=1
-        if temp is None:
-            temp = torch.tensor([0.]).to(x.device)
+        temp = torch.tensor([float(temp)]).to(x.device)
 
         b = len(y)
 
@@ -58,7 +61,7 @@ class SNNLoss(nn.Module):
         den_dist = torch.clone(e_dist)
 
         # OGNI QUALVOLTA LA DISTANZA AL DENOMINATORE E' ZERO INSERISCO -inf
-        # cosÃ¬ facendo sto settando a -inf la distanza dei punti che non appartengono alla classe riferita alla riga
+        # così facendo sto settando a -inf la distanza dei punti che non appartengono alla classe riferita alla riga
         den_dist[m_den == 0] = float('-inf')
 
         # make per class mask
@@ -70,7 +73,7 @@ class SNNLoss(nn.Module):
         num_dist = torch.clone(e_dist)
 
         # OGNI QUALVOLTA LA DISTANZA AL DENOMINATORE E' ZERO INSERISCO -inf
-        # cosÃ¬ facendo sto settando a -inf la distanza dei punti che non appartengono alla classe riferita alla riga
+        # così facendo sto settando a -inf la distanza dei punti che non appartengono alla classe riferita alla riga
         num_dist[m_num == 0] = float('-inf')
         # print(num_dist)
         # compute logsumexp
