@@ -109,6 +109,7 @@ class LabelledDataset(Dataset):
 
     Arguments:
         data (list of tuples (image, label)): list of labelled images
+		transform: torchvision transformations to apply to input data
     '''
     def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
@@ -133,7 +134,7 @@ class LabelledDataset(Dataset):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000):
+    def __init__(self, block, layers, parameters, use_exemplars, num_classes=10, k=5000):
         super(ResNet, self).__init__()
 
         self.inplanes = 16
@@ -165,9 +166,7 @@ class ResNet(nn.Module):
         self.criterion = parameters['CRITERION']()
 
         # Set utils structures
-        self.lwf = lwf
         self.use_exemplars = use_exemplars
-        self.ncm = ncm
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
@@ -201,7 +200,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, get_only_features=False):
+    def forward(self, x, get_only_features=False, get_also_features=False):
 
         x = self.conv1(x)
         x = self.bn1(x)
@@ -216,11 +215,15 @@ class ResNet(nn.Module):
 
         if get_only_features:
             return x
+		f = x.clone().detach()
 
         x = self.fc(x)
+		
+		if get_also_features:
+			return x, f
         return x
 
-    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, distillation=None, policy='random', transform=None):
 
         # Setting up training framework
         self = self.to(DEVICE)
@@ -236,10 +239,14 @@ class ResNet(nn.Module):
             self.load_state_dict(state_dict)
 
         # Store and freeze current network
-        if self.lwf:
+        if distillation:
             old = deepcopy(self)
             for p in old.parameters():
                 p.requires_grad = False
+				
+			if distillation == 'lfc':
+				# Initialise lambda
+				lmbd = 5 * len(self.learned_classes) / 10
 
         # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
@@ -259,7 +266,7 @@ class ResNet(nn.Module):
             dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
 
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
-        print(f'Training on {len(loader)*self.batch_size} images...')
+        print(f'Training on {len(loader.dataset)} images...')
         total_loss = math.nan
 
         for epoch in range(self.num_epochs):
@@ -278,6 +285,7 @@ class ResNet(nn.Module):
 
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
+				loss1 = 0.0
 
                 self.train()
 
@@ -286,20 +294,33 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-                outputs = self.forward(images)
+				# Get also input features for cosine
+                outputs, cur_features = self.forward(images, get_also_features=True)
 
                 # Compute loss
-                if self.lwf and self.iterations > 0:
+                if distillation and self.iterations > 0:
 
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
                         output_old = old(images).to(DEVICE)
+						# Get input features according to old network
+						old_features = F.normalize(old(images, get_only_features=True).detach())	
 
-                    # Include old predictions for distillation
-                    target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+					if distillation == 'lwf':
+						# Include old predictions for distillation
+						target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+					if distillation == 'lfc':
+						# Try to preserve direction of old features
+						cur_features = F.normalize(cur_features)
+						loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
+								torch.ones(inputs.shape[0]).to(DEVICE)) * lmbd
 
-                loss = self.criterion(outputs, target)
+				if distillation == 'lfc':
+					loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
+					loss = loss1 + loss2
+				else:
+					loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
@@ -414,10 +435,7 @@ class ResNet(nn.Module):
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
                 if classifier == 'ncm':
-                    if self.ncm:
-                        preds = self.get_nearest_classes(images)
-                    else:
-                        raise ValueError("The model is not trained on NCM")
+                    preds = self.get_nearest_classes(images)
 
                 elif classifier == 'fc':
                     outputs = self.forward(images)
