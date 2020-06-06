@@ -224,7 +224,7 @@ class ResNet(nn.Module):
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, distillation=None, policy='random', transform=None):
-
+        torch.cuda.set_device(0)
         # Setting up training framework
         self = self.to(DEVICE)
         cudnn.benchmark
@@ -242,7 +242,8 @@ class ResNet(nn.Module):
 				
             if distillation == 'lfc' and self.iterations > 0:
                 # Initialise lambda
-                lmbd = 5 * (len(self.learned_classes) / 10)**0.5
+                lmbd = 5 * ((len(self.learned_classes) / 10)**0.5)
+                K = 2
                 print(f'Training with lambda {lmbd}')
 
         # Optimizer and scheduler setup
@@ -251,6 +252,7 @@ class ResNet(nn.Module):
 
         # Generate and load training dataset
         dataset = LabelledDataset(train_dataset, transform)
+        new_classes = set([x[1] for x in train_dataset])
         if self.use_exemplars:
 
             # Merge new training image and exemplars
@@ -283,10 +285,11 @@ class ResNet(nn.Module):
             total_training = 0
 
             for images, labels in loader:
-
+                labels = labels.to(DEVICE)
                 images = images.to(DEVICE)
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
-                loss1 = 0.0
+                loss1 = torch.zeros(1).to(DEVICE)
+                loss3 = torch.zeros(1).to(DEVICE)
 
                 self.train()
 
@@ -317,10 +320,28 @@ class ResNet(nn.Module):
                             loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
                                 torch.ones(images.shape[0]).to(DEVICE)) * lmbd
 
+                            # Preserve margin
+                            old_scores = F.normalize(outputs[:,list(self.learned_classes)])
+                            new_scores = F.normalize(outputs[:,list(new_classes)])
+                            outputs_bs = torch.cat((old_scores, new_scores), dim=1)
+                            # print(outputs_bs, outputs_bs.shape)
+                            gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
+                            # print(gt_index)
+                            gt_index = gt_index.scatter(1, labels.view(-1,1), 1).ge(0.5)
+                            # print(gt_index)
+                            gt_scores = outputs_bs.masked_select(gt_index)
+                            max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
+                            hard_index = [l in self.learned_classes for l in labels]
+                            if any(hard_index):
+                                gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
+                                max_novel_scores = max_novel_scores[hard_index]
+                                loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
+                                              max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE)) * (1/len(self.learned_classes))                                
+
                 if distillation == 'lfc':
                     # loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
                     loss2 = self.criterion(outputs, target)
-                    loss = loss1 + loss2
+                    loss = loss1 + loss2 + loss3
                 else:
                     loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
