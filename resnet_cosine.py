@@ -146,7 +146,7 @@ class LabelledDataset(Dataset):
 
 class CosineLayer(nn.Module):
 
-    def __init__(self, in_features, out_features, sigma=None):
+    def __init__(self, in_features, out_features, sigma=True):
         super(CosineLayer, self).__init__()
 
         # Setup layer dimenstions
@@ -155,7 +155,7 @@ class CosineLayer(nn.Module):
         self.weight = Parameter(torch.Tensor(out_features, in_features))
 
         # Setup layer sigma parameter
-        self.sigma = Parameter(torch.Tensor(sigma)) if sigma else None
+        self.sigma = Parameter(torch.Tensor(1)) if sigma else None
 
         # Reset layer parameter
         self.reset_parameters()
@@ -171,7 +171,7 @@ class CosineLayer(nn.Module):
     def forward(self, input):
 
         # Compute output
-        out = F.linear(F.normalize(input), F.normalize(self.weight))
+        out = F.linear(F.normalize(input, p=2, dim=1), F.normalize(self.weight, p=2, dim=1))
 
         # Scale by sigma if set
         if self.sigma is not None:
@@ -325,10 +325,10 @@ class ResNet(nn.Module):
 
             # Update current network
             if self.iterations > 0:
-                
-                self.fc = CosineLayer(64, len(self.learned_classes) + 10)
-                self.fc.weight.data[:len(self.learned_classes)] = old.fc.weight.data
-                self.fc.sigma = old.fc.sigma
+
+                self.fc = CosineLayer(64, len(self.learned_classes) + 10).cuda()
+                self.fc.weight.data[:len(self.learned_classes)] = old.fc.weight.data.cuda()
+                self.fc.sigma = old.fc.sigma if old.fc.sigma else None
 
             for p in old.parameters():
                 p.requires_grad = False
