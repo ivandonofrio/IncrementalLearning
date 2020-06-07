@@ -9,6 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
+
+from torch.nn.parameter import Parameter
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
 from itertools import chain
@@ -28,6 +30,7 @@ Taken from https://github.com/hshustc/CVPR19_Incremental_Learning/tree/master/ci
 """
 
 def conv3x3(in_planes, out_planes, stride=1):
+
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
@@ -37,6 +40,7 @@ class BasicBlock(nn.Module):
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
         super(BasicBlock, self).__init__()
+
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
@@ -46,6 +50,7 @@ class BasicBlock(nn.Module):
         self.stride = stride
 
     def forward(self, x):
+
         residual = x
 
         out = self.conv1(x)
@@ -65,15 +70,15 @@ class BasicBlock(nn.Module):
 
 
 class Bottleneck(nn.Module):
+
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
-
         super(Bottleneck, self).__init__()
+
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
@@ -82,6 +87,7 @@ class Bottleneck(nn.Module):
         self.stride = stride
 
     def forward(self, x):
+
         residual = x
 
         out = self.conv1(x)
@@ -105,14 +111,17 @@ class Bottleneck(nn.Module):
 
 
 class LabelledDataset(Dataset):
+
     '''Custom dataset for labelled images.
 
     Arguments:
         data (list of tuples (image, label)): list of labelled images
 		transform: torchvision transformations to apply to input data
     '''
+
     def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
+
         self.images = []
         self.labels = []
         for x in data:
@@ -124,6 +133,7 @@ class LabelledDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
+
         image, label = self.images[idx], self.labels[idx]
 
         if self.transform:
@@ -132,9 +142,46 @@ class LabelledDataset(Dataset):
         return image, label
 
 
+class CosineLayer(nn.Module):
+
+    def __init__(self, in_features, out_features, sigma=None):
+        super(CosineLayer, self).__init__()
+
+        # Setup layer dimenstions
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(torch.Tensor(out_features, in_features))
+
+        # Setup layer sigma parameter
+        self.sigma = Parameter(torch.Tensor(sigma)) if sigma else None
+
+        # Reset layer parameter
+        self.reset_parameters()
+
+    def reset_parameters(self):
+
+        std = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-std, std)
+
+        if self.sigma is not None:
+            self.sigma.data.fill_(1)
+
+    def forward(self, input):
+
+        # Compute output
+        out = F.linear(F.normalize(input), F.normalize(self.weight))
+
+        # Scale by sigma if set
+        if self.sigma is not None:
+            out = self.sigma * out
+
+        return out
+
+
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, use_exemplars, num_classes=10, k=5000):
+    def __init__(self, block, layers, parameters, use_exemplars, classifier='std', num_classes=10, k=5000):
+
         super(ResNet, self).__init__()
 
         self.inplanes = 16
@@ -146,11 +193,17 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 32, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
         self.avgpool = nn.AvgPool2d(8, stride=1)
-        self.fc = nn.Linear(64 * block.expansion, num_classes)
+
+        if classifier == 'std':
+            self.fc = nn.Linear(64 * block.expansion, num_classes)
+        elif classifier == 'cos':
+            self.fc = CosineLayer(64 * block.expansion, num_classes)
 
         for m in self.modules():
+
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -218,13 +271,15 @@ class ResNet(nn.Module):
         f = x.clone().detach()
 
         x = self.fc(x)
-		
+
         if get_also_features:
             return x, f
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, distillation=None, policy='random', transform=None):
+
         torch.cuda.set_device(0)
+
         # Setting up training framework
         self = self.to(DEVICE)
         cudnn.benchmark
@@ -239,10 +294,10 @@ class ResNet(nn.Module):
             old = deepcopy(self)
             for p in old.parameters():
                 p.requires_grad = False
-				
+
             if distillation == 'lfc' and self.iterations > 0:
                 # Initialise lambda
-                lmbd = 5 * ((len(self.learned_classes) / 10)**0.5)
+                lmbd = 5 * ((10/len(self.learned_classes))**0.5)
                 K = 2
                 print(f'Training with lambda {lmbd}')
 
@@ -309,7 +364,7 @@ class ResNet(nn.Module):
                         old.eval()
                         output_old = old(images).to(DEVICE)
                         # Get input features according to old network
-                        old_features = F.normalize(old(images, get_only_features=True).detach())	
+                        old_features = F.normalize(old(images, get_only_features=True).detach())
 
                         if distillation == 'lwf':
                             # Include old predictions for distillation
@@ -336,7 +391,7 @@ class ResNet(nn.Module):
                                 gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
                                 max_novel_scores = max_novel_scores[hard_index]
                                 loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
-                                              max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE)) * (1/len(self.learned_classes))                                
+                                              max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE)) * (1/len(self.learned_classes))
 
                 if distillation == 'lfc':
                     # loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
@@ -404,14 +459,14 @@ class ResNet(nn.Module):
             X_exemplars = []    # List of images
             X = []  # List of features (one for each image)
             y = []  # List of labels
-            
+
             # Convert dictionary of exemplars into:
             # - X_exemplars: list of tensors (each tensor is an image)
             # - y: list of labels
             for label, value in self.exemplars.items():
                 X_exemplars += value['exemplars']
                 y += [label] * len(value['exemplars'])
-            
+
             # Convert X_exemplars: each image will be converted into X to
             # its features representation
             for image in DataLoader(X_exemplars):
@@ -422,14 +477,14 @@ class ResNet(nn.Module):
                 features = features.cpu().detach().numpy()[0]
 
                 X.append(features)
-            
-            
+
+
             if classifier == 'svm':
                 self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
 
             elif classifier == 'knn':
                 self.clf[classifier] = KNeighborsClassifier(**classifier_kwargs)
-            
+
             # Fit the classifier
             self.clf[classifier].fit(X, y)
 
