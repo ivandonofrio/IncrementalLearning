@@ -1,9 +1,10 @@
 import math
 import time
 import random
-
+from numpy import linalg as LA
 from copy import deepcopy
 
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,11 +15,19 @@ from torch.backends import cudnn
 from itertools import chain
 
 # Classifiers
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+
+# PyTorch
 from torchvision import transforms
+from tqdm import tqdm, tqdm_gui
+
+# Losses
+from SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -133,8 +142,19 @@ class LabelledDataset(Dataset):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000):
+    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000, loss=None):
         super(ResNet, self).__init__()
+        """
+        Make Incremental Learning ResNets great again!
+
+        :param block:
+        :param layers:
+        :param parameters:
+        :param lwf: bool, enable Learning without Forgetting
+        :param use_exemplars: bool, store exemplars at the end of an iteration
+        :param ncm: bool, enable Nearest Class Mean
+        :param num_classes: int, number of initial classes
+        """
 
         self.inplanes = 16
 
@@ -162,7 +182,16 @@ class ResNet(nn.Module):
         self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
         self.optimizer = parameters['OPTIMIZER']
         self.optimizer_parameters = parameters['OPTIMIZER_PARAMETERS']
-        self.criterion = parameters['CRITERION']()
+
+        if loss == 'bce':
+            self.criterion = nn.BCEWithLogitsLoss()
+        elif loss == 'snn':
+            self.criterion = SNNLoss()
+            self.snn_temperature = parameters['SNN_temperature']
+        else:
+            self.criterion = parameters['CRITERION']()
+
+        self.loss = loss
 
         # Set utils structures
         self.lwf = lwf
@@ -202,7 +231,14 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, get_only_features=False):
+        """
+        Give me an image and I will tell you what it could be
+        (or how you can represent it if you pass me get_only_features=True)
 
+        :param x: An image that you would never recognize
+        :param get_only_features: bool, if False returns the output from the last FC layer
+            if True returns la output from the penultimate layer
+        """
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -220,8 +256,22 @@ class ResNet(nn.Module):
         x = self.fc(x)
         return x
 
-    def perform_training(self, train_dataset, val_dataset=None, state_dict=None, verbose=False, validation_step=5, classes_at_time=10, policy='random', transform=None):
+    def perform_training(self, train_dataset, val_dataset=None, state_dict=None,
+                         verbose=False, validation_step=5, classes_at_time=10,
+                         policy='random', transform=None):
+        """
+        Train me!
 
+        :param train_dataset: the training dataset
+        :param val_dataset: if not None, prints the accuracy on this dataset each validation_step epochs
+        :param validation_steps: read this ^^^
+        :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's
+            one or you're a cheater
+        :param verbose: bla bla bla
+        :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
+        :param policy: string, ['random', 'norm']
+        :param transform: the transformation to apply to the images of the dataset
+        """
         # Setting up training framework
         self = self.to(DEVICE)
         cudnn.benchmark
@@ -262,9 +312,9 @@ class ResNet(nn.Module):
         print(f'Training on {len(loader)*self.batch_size} images...')
         total_loss = math.nan
 
-        for epoch in range(self.num_epochs):
+        epochs = range(self.num_epochs) if verbose else tqdm(range(self.num_epochs))
+        for epoch in epochs:
             if verbose:
-
                 print('Epoch {:>3}/{}\tLoss: {:07.4f}\tLearning rate: {}'.format(
                     epoch+1, self.num_epochs,
                     total_loss,
@@ -275,9 +325,12 @@ class ResNet(nn.Module):
             total_training = 0
 
             for images, labels in loader:
-
                 images = images.to(DEVICE)
-                target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
+
+                if self.loss == 'bce':
+                    target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
+                else:
+                    target = labels.to(DEVICE)
 
                 self.train()
 
@@ -290,16 +343,27 @@ class ResNet(nn.Module):
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
-
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
                         output_old = old(images).to(DEVICE)
 
-                    # Include old predictions for distillation
-                    target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                    if self.loss == 'bce':
+                        # Include old predictions for distillation
+                        target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                    
+                    elif self.loss == 'snn':
+                        outputs += output_old
+                        target += target
 
-                loss = self.criterion(outputs, target)
+                    else:
+                        raise ValueError("I'm sorry man, I don't know how to hande this loss with LwF")
+
+                if self.loss == 'snn':
+                    loss = self.criterion(outputs, target, temp=self.snn_temperature)
+                else:
+                    loss = self.criterion(outputs, target)
+
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
 
@@ -349,44 +413,44 @@ class ResNet(nn.Module):
 
         return epochs_stats
 
-    def perform_test(self, dataset, classifier = 'fc', **classifier_kwargs):
+    def perform_test(self, dataset, transform=None, classifier='fc', **classifier_kwargs):
         """
-        :param classifier: 'fc', 'ncm', 'svm', 'knn'
+        :param classifier: string, ['fc', 'ncm', 'svm', 'knn', 'rf'], where:
+            - fc: last fully connected layer (standard ResNet)
+            - ncm: nearest class mean
+            - svm: SVM
+            - knn: k-NN
+            - rf: random forest
         """
 
         # If classifying with SVM or KNN, and that type of classifier is not cached yet
-        if classifier in ['svm', 'knn'] and classifier not in self.csf:
+        if classifier in ['svm', 'knn', 'rf'] and classifier not in self.clf:
 
-            X_exemplars = []    # List of images
             X = []  # List of features (one for each image)
             y = []  # List of labels
             
             # Convert dictionary of exemplars into:
-            # - X_exemplars: list of tensors (each tensor is an image)
-            # - y: list of labels
-            for label, value in self.exemplars.items():
-                X_exemplars += value['exemplars']
+            # - X: list of all images' representation
+            # - y: list of all images' label
+            for label, value in self.exemplars.items(): # For each label
+                
+                # Take representations of the exemplars of this label
+                current_representations = value['representation']
+                
+                # Map each tensor to a numpy array (after putting it in CPU)
+                # and add them to the X list
+                X += list(map(lambda tensor: tensor.cpu().detach().numpy(), current_representations))
                 y += [label] * len(value['exemplars'])
-            
-            # Convert X_exemplars: each image will be converted into X to
-            # its features representation
-            for image in DataLoader(X_exemplars):
-                image = image.cuda()
-                features = self.forward(image, get_only_features=True)
-
-                # Bring tensor to CPU to transform it into a numpy array
-                features = features.cpu().detach().numpy()[0]
-
-                X.append(features)
-            
             
             if classifier == 'svm':
                 self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
 
             elif classifier == 'knn':
                 self.clf[classifier] = KNeighborsClassifier(**classifier_kwargs)
+
+            elif classifier == 'rf':
+                self.clf[classifier] = RandomForestClassifier(**classifier_kwargs)
             
-            # Fit the classifier
             self.clf[classifier].fit(X, y)
 
         self = self.to(DEVICE)
@@ -423,13 +487,14 @@ class ResNet(nn.Module):
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
 
-                elif classifier in ['svm', 'knn']:
+                elif classifier in ['svm', 'knn', 'rf']:
                     features = self.forward(images, get_only_features=True)
 
                     # Bring tensor to CPU to transform it into a numpy array
                     features = features.cpu().detach().numpy()
+                    normalized_features = list(map(lambda feature: feature / LA.norm(feature), features))
 
-                    preds = self.clf[classifier].predict(features)
+                    preds = self.clf[classifier].predict(normalized_features)
                     preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
 
                 else:
@@ -447,7 +512,12 @@ class ResNet(nn.Module):
         return accuracy, prediction_history
 
     def store_exemplars(self, images, policy='random'):
+        """
+        Select exemplars from the images and recompute all the others
 
+        :param images: list of tuples (image, label), containing all the new images to add
+        :param policy: string, ['random', 'norm', ...]
+        """
         self.eval()
 
         with torch.no_grad():
@@ -567,7 +637,11 @@ class ResNet(nn.Module):
                 counter -= batch
 
     def get_mean_representation(self, exemplars):
-
+        """
+        :return: tuple (maps, mean), where:
+            - maps: list of representations
+            - mean: mean of all the representations
+        """
         # Returns image features for current network and their non-normalized mean
         self.eval()
 
@@ -579,7 +653,9 @@ class ResNet(nn.Module):
         return maps, torch.stack(maps).mean(0).squeeze()
 
     def get_nearest_classes(self, images):
-
+        """
+        Get nearest classes
+        """
         self.eval()
         with torch.no_grad():
 
