@@ -309,14 +309,14 @@ class ResNet(nn.Module):
         new_classes = set([x[1] for x in train_dataset])
 
         for label in new_classes:
-            if label not in label_to_index:
+            if label not in self.label_to_index:
 
                 index = len(self.label_to_index)
 
                 self.label_to_index[label] = index
                 self.index_to_label[index] = label
 
-        new_classes = [label_to_index[label] for label in new_classes]
+        new_classes = [self.label_to_index[label] for label in new_classes]
 
         # Store and freeze current network
         if distillation:
