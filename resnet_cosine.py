@@ -324,9 +324,11 @@ class ResNet(nn.Module):
             old = deepcopy(self)
 
             # Update current network
-            self.fc = CosineLayer(64, len(self.learned_classes) + 10)
-            self.fc.weight.data[:len(self.learned_classes)] = old.fc.weight.data
-            self.fc.sigma = old.fc.sigma
+            if self.iterations > 0:
+                
+                self.fc = CosineLayer(64, len(self.learned_classes) + 10)
+                self.fc.weight.data[:len(self.learned_classes)] = old.fc.weight.data
+                self.fc.sigma = old.fc.sigma
 
             for p in old.parameters():
                 p.requires_grad = False
