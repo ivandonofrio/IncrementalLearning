@@ -258,7 +258,7 @@ class ResNet(nn.Module):
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None,
                          verbose=False, validation_step=5, classes_at_time=10,
-                         policy='random', transform=None):
+                         policy='random', transform=None, classifier='fc', **classifier_kwargs):
         """
         Train me!
 
@@ -271,6 +271,7 @@ class ResNet(nn.Module):
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
+        :param classifier: string, ['fc', 'svm']
         """
         # Setting up training framework
         self = self.to(DEVICE)
@@ -320,6 +321,12 @@ class ResNet(nn.Module):
                     total_loss,
                     scheduler.get_last_lr()
                 ))
+            
+            if classifier == 'svm':
+                clf = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
+                self.store_exemplars(train_dataset, policy='random')
+                X, y = self.get_fittable_from_exemplars()
+                self.clf[classifier].fit(X, y)
 
             total_loss = 0.0
             total_training = 0
@@ -339,7 +346,10 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-                outputs = self.forward(images)
+                if classifier == 'fc':
+                    outputs = self.forward(images)
+                elif classifier == 'svm':
+                    outputs = self.get_predictions_from_classifier(images, clf)
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
@@ -413,6 +423,53 @@ class ResNet(nn.Module):
 
         return epochs_stats
 
+    def get_fittable_from_exemplars(self, exemplars = self.exemplars):
+        """
+        Transform dict of exemplars in X and y, where X and y are fittable
+            for scikit-learn classifiers
+
+        :param exemplars: dict of exemplars
+
+        :return: X, y
+        """
+        X = []  # List of features (one for each image)
+        y = []  # List of labels
+        
+        # Convert dictionary of exemplars into:
+        # - X: list of all images' representation
+        # - y: list of all images' label
+        for label, value in exemplars.items(): # For each label
+            
+            # Take representations of the exemplars of this label
+            current_representations = value['representation']
+            
+            # Map each tensor to a numpy array (after putting it in CPU)
+            # and add them to the X list
+            X += list(map(lambda tensor: tensor.cpu().detach().numpy(), current_representations))
+            y += [label] * len(value['exemplars'])
+        
+        return X, y
+
+    def get_predictions_from_classifier(self, images, clf):
+        """
+        Take the images, compute the features and predict them with the classifier
+
+        :param images: images to predict
+        :param clf: fitted classifier to use to predict
+
+        :return: predictions
+        """
+        features = self.forward(images, get_only_features=True)
+
+        # Bring tensor to CPU to transform it into a numpy array
+        features = features.cpu().detach().numpy()
+        normalized_features = list(map(lambda feature: feature / LA.norm(feature), features))
+
+        preds = clf.predict(normalized_features)
+        preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
+
+        return preds
+
     def perform_test(self, dataset, transform=None, classifier='fc', **classifier_kwargs):
         """
         :param classifier: string, ['fc', 'ncm', 'svm', 'knn', 'rf'], where:
@@ -425,22 +482,7 @@ class ResNet(nn.Module):
 
         # If classifying with SVM or KNN, and that type of classifier is not cached yet
         if classifier in ['svm', 'knn', 'rf'] and classifier not in self.clf:
-
-            X = []  # List of features (one for each image)
-            y = []  # List of labels
-            
-            # Convert dictionary of exemplars into:
-            # - X: list of all images' representation
-            # - y: list of all images' label
-            for label, value in self.exemplars.items(): # For each label
-                
-                # Take representations of the exemplars of this label
-                current_representations = value['representation']
-                
-                # Map each tensor to a numpy array (after putting it in CPU)
-                # and add them to the X list
-                X += list(map(lambda tensor: tensor.cpu().detach().numpy(), current_representations))
-                y += [label] * len(value['exemplars'])
+            X, y = self.get_fittable_from_exemplars()
             
             if classifier == 'svm':
                 self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
@@ -488,14 +530,7 @@ class ResNet(nn.Module):
                     _, preds = torch.max(outputs.data, 1)
 
                 elif classifier in ['svm', 'knn', 'rf']:
-                    features = self.forward(images, get_only_features=True)
-
-                    # Bring tensor to CPU to transform it into a numpy array
-                    features = features.cpu().detach().numpy()
-                    normalized_features = list(map(lambda feature: feature / LA.norm(feature), features))
-
-                    preds = self.clf[classifier].predict(normalized_features)
-                    preds = torch.IntTensor(preds).to(DEVICE) # Convert to tensor and move to DEVICE
+                    preds = self.get_predictions_from_classifier(images, self.clf[classifier])
 
                 else:
                     raise ValueError("Wrong value for argument 'classifier'")
