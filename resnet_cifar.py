@@ -259,7 +259,7 @@ class ResNet(nn.Module):
             for i in range(1, blocks-1):
                 layers.append(block(self.inplanes, planes))
             layers.append(block(self.inplanes, planes, last=True))
-        else: 
+        else:
             for i in range(1, blocks):
                 layers.append(block(self.inplanes, planes))
 
@@ -530,7 +530,8 @@ class ResNet(nn.Module):
 
                 if classifier == 'ncm':
                     preds = self.get_nearest_classes(images)
-
+                elif classifier == 'cos':
+                    preds = self.get_most_similar_cos(images)
                 elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
@@ -701,11 +702,31 @@ class ResNet(nn.Module):
 
             for map in features:
 
-                dst = {label: (map - self.exemplars[label]['mean'].to(DEVICE)).pow(2).sum() for label in self.exemplars.keys()}
+                dst = {label:(map - self.exemplars[label]['mean'].to(DEVICE)).pow(2).sum() for label in self.exemplars.keys()}
                 pred = min(dst, key=dst.get)
                 preds.append(pred)
 
         return torch.Tensor(preds).to(DEVICE)
+
+    def get_most_similar_cos(self, images):
+
+        self.eval()
+        with torch.no_grad():
+
+            features = self.forward(images, get_only_features=True).detach()
+            features = F.normalize(features)
+            preds = []
+
+            for map in features:
+
+                similarity = torch.nn.CosineSimilarity(dim=0)
+
+                dst = {label:(similarity(map, self.exemplars[label]['mean'].to(DEVICE))) for label in self.exemplars.keys()}
+                pred = max(dst, key=dst.get)
+                preds.append(pred)
+
+        return torch.Tensor(preds).to(DEVICE)
+
 
 def resnet20(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 3
