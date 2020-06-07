@@ -38,7 +38,7 @@ def conv3x3(in_planes, out_planes, stride=1):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, last=False):
         super(BasicBlock, self).__init__()
 
         self.conv1 = conv3x3(inplanes, planes, stride)
@@ -48,6 +48,7 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
+        self.last = last
 
     def forward(self, x):
 
@@ -64,7 +65,8 @@ class BasicBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
-        out = self.relu(out)
+        if not self.last:
+            out = self.relu(out)
 
         return out
 
@@ -191,13 +193,18 @@ class ResNet(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.layer1 = self._make_layer(block, 16, layers[0])
         self.layer2 = self._make_layer(block, 32, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
+        if classifier == 'cos':
+            self.layer3 = self._make_layer(block, 64, layers[2], stride=2, last_phase=True)
+        else:
+            self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
         self.avgpool = nn.AvgPool2d(8, stride=1)
 
         if classifier == 'std':
             self.fc = nn.Linear(64 * block.expansion, num_classes)
         elif classifier == 'cos':
             self.fc = CosineLayer(64 * block.expansion, num_classes)
+        else:
+            raise(ValueError('Unknown last layer type'))
 
         for m in self.modules():
 
@@ -233,7 +240,7 @@ class ResNet(nn.Module):
         # Exemplars structure
         self.exemplars = {}
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, last_phase=False):
 
         downsample = None
 
@@ -248,8 +255,13 @@ class ResNet(nn.Module):
         layers.append(block(self.inplanes, planes, stride, downsample))
         self.inplanes = planes * block.expansion
 
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+        if last_phase:
+            for i in range(1, blocks-1):
+                layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes, last=True))
+        else: 
+            for i in range(1, blocks):
+                layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
 
@@ -297,7 +309,7 @@ class ResNet(nn.Module):
 
             if distillation == 'lfc' and self.iterations > 0:
                 # Initialise lambda
-                lmbd = 5 * ((10/len(self.learned_classes))**0.5)
+                lmbd = 2 ** ((len(self.learned_classes)/10) ** 0.5)
                 K = 2
                 print(f'Training with lambda {lmbd}')
 
@@ -364,39 +376,43 @@ class ResNet(nn.Module):
                         old.eval()
                         output_old = old(images).to(DEVICE)
                         # Get input features according to old network
-                        old_features = F.normalize(old(images, get_only_features=True).detach())
+                        old_features = old(images, get_only_features=True).detach()
+                        if not isinstance(old.fc, CosineLayer):
+                            old_features = F.normalize(old_features)
 
                         if distillation == 'lwf':
                             # Include old predictions for distillation
                             target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
                         if distillation == 'lfc':
                             # Try to preserve direction of old features
-                            cur_features = F.normalize(cur_features)
+                            if not isinstance(self.fc, CosineLayer):
+                                cur_features = F.normalize(cur_features)
                             loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
                                 torch.ones(images.shape[0]).to(DEVICE)) * lmbd
 
                             # Preserve margin
-                            old_scores = F.normalize(outputs[:,list(self.learned_classes)])
-                            new_scores = F.normalize(outputs[:,list(new_classes)])
-                            outputs_bs = torch.cat((old_scores, new_scores), dim=1)
-                            # print(outputs_bs, outputs_bs.shape)
-                            gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
-                            # print(gt_index)
-                            gt_index = gt_index.scatter(1, labels.view(-1,1), 1).ge(0.5)
-                            # print(gt_index)
-                            gt_scores = outputs_bs.masked_select(gt_index)
-                            max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
-                            hard_index = [l in self.learned_classes for l in labels]
-                            if any(hard_index):
-                                gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
-                                max_novel_scores = max_novel_scores[hard_index]
-                                loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
-                                              max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE)) * (1/len(self.learned_classes))
+                            # old_scores = F.normalize(outputs[:,list(self.learned_classes)])
+                            # new_scores = F.normalize(outputs[:,list(new_classes)])
+                            # outputs_bs = torch.cat((old_scores, new_scores), dim=1)
+                            # # print(outputs_bs, outputs_bs.shape)
+                            # gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
+                            # # print(gt_index)
+                            # gt_index = gt_index.scatter(1, labels.view(-1,1), 1).ge(0.5)
+                            # # print(gt_index)
+                            # gt_scores = outputs_bs.masked_select(gt_index)
+                            # max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
+                            # hard_index = [l in self.learned_classes for l in labels]
+                            # if any(hard_index):
+                            #     gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
+                            #     max_novel_scores = max_novel_scores[hard_index]
+                            #     loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
+                            #                   max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE)) * (1/len(self.learned_classes))
 
                 if distillation == 'lfc':
                     # loss2 = nn.CrossEntropyLoss()(outputs, labels.to(DEVICE))
                     loss2 = self.criterion(outputs, target)
-                    loss = loss1 + loss2 + loss3
+                    balance = len(self.learned_classes) / (len(self.learned_classes) + len(new_classes))
+                    loss = loss1 * balance + loss2 * (1 - balance)
                 else:
                     loss = self.criterion(outputs, target)
                 total_loss += loss.item() * len(labels)
