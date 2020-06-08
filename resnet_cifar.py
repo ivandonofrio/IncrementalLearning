@@ -146,7 +146,7 @@ class LabelledDataset(Dataset):
 
 class CosineLayer(nn.Module):
 
-    def __init__(self, in_features, out_features, sigma=None):
+    def __init__(self, in_features, out_features, sigma=True):
         super(CosineLayer, self).__init__()
 
         # Setup layer dimenstions
@@ -155,7 +155,7 @@ class CosineLayer(nn.Module):
         self.weight = Parameter(torch.Tensor(out_features, in_features))
 
         # Setup layer sigma parameter
-        self.sigma = Parameter(torch.Tensor(sigma)) if sigma else None
+        self.sigma = Parameter(torch.Tensor(1)) if sigma else None
 
         # Reset layer parameter
         self.reset_parameters()
@@ -168,16 +168,16 @@ class CosineLayer(nn.Module):
         if self.sigma is not None:
             self.sigma.data.fill_(1)
 
-    def forward(self, input):
+    def forward(self, x):
 
         # Compute output
-        out = F.linear(F.normalize(input), F.normalize(self.weight))
+        x = F.linear(F.normalize(x), F.normalize(self.weight))
 
         # Scale by sigma if set
         if self.sigma is not None:
-            out = self.sigma * out
+            x = self.sigma * x
 
-        return out
+        return x
 
 
 class ResNet(nn.Module):
@@ -386,6 +386,7 @@ class ResNet(nn.Module):
                         if distillation == 'lfc':
                             # Try to preserve direction of old features
                             if not isinstance(self.fc, CosineLayer):
+                                print('Normalizing features...')
                                 cur_features = F.normalize(cur_features)
                             loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
                                 torch.ones(images.shape[0]).to(DEVICE)) * lmbd
@@ -716,10 +717,9 @@ class ResNet(nn.Module):
             features = self.forward(images, get_only_features=True).detach()
             features = F.normalize(features)
             preds = []
+            similarity = nn.CosineSimilarity(dim=0)
 
             for map in features:
-
-                similarity = torch.nn.CosineSimilarity(dim=0)
 
                 dst = {label:(similarity(map, self.exemplars[label]['mean'].to(DEVICE))) for label in self.exemplars.keys()}
                 pred = max(dst, key=dst.get)
