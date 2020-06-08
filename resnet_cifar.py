@@ -27,7 +27,10 @@ from torchvision import transforms
 from tqdm import tqdm, tqdm_gui
 
 # Losses
-from SNNLoss import SNNLoss
+try:
+    from SNNLoss import SNNLoss
+except:
+    from utils.SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -265,8 +268,7 @@ class ResNet(nn.Module):
         :param train_dataset: the training dataset
         :param val_dataset: if not None, prints the accuracy on this dataset each validation_step epochs
         :param validation_steps: read this ^^^
-        :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's
-            one or you're a cheater
+        :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
         :param policy: string, ['random', 'norm']
@@ -313,6 +315,13 @@ class ResNet(nn.Module):
         print(f'Training on {len(loader)*self.batch_size} images...')
         total_loss = math.nan
 
+        if classifier == 'svm':
+            new_classes = []
+            for _, labels in loader:
+                for label in labels:
+                    if label not in self.learned_classes:
+                        new_classes.append(label.item())
+
         epochs = range(self.num_epochs) if verbose else tqdm(range(self.num_epochs))
         for epoch in epochs:
             if verbose:
@@ -324,9 +333,13 @@ class ResNet(nn.Module):
             
             if classifier == 'svm':
                 clf = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
+                
+                self.learned_classes.update(new_classes)
                 self.store_exemplars(train_dataset, policy='random')
+                self.learned_classes.difference_update(new_classes) # Remove items in new_classes from set
+
                 X, y = self.get_fittable_from_exemplars()
-                self.clf[classifier].fit(X, y)
+                clf.fit(X, y)
 
             total_loss = 0.0
             total_training = 0
@@ -350,6 +363,7 @@ class ResNet(nn.Module):
                     outputs = self.forward(images)
                 elif classifier == 'svm':
                     outputs = self.get_predictions_from_classifier(images, clf)
+                    outputs = F.one_hot(outputs, num_classes=self.num_classes)
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
@@ -423,15 +437,18 @@ class ResNet(nn.Module):
 
         return epochs_stats
 
-    def get_fittable_from_exemplars(self, exemplars = self.exemplars):
+    def get_fittable_from_exemplars(self, exemplars = None):
         """
         Transform dict of exemplars in X and y, where X and y are fittable
             for scikit-learn classifiers
 
-        :param exemplars: dict of exemplars
+        :param exemplars: dict of exemplars, self.exemplars if None
 
         :return: X, y
         """
+        if exemplars == None:
+            exemplars = self.exemplars
+
         X = []  # List of features (one for each image)
         y = []  # List of labels
         
