@@ -27,10 +27,7 @@ from torchvision import transforms
 from tqdm import tqdm, tqdm_gui
 
 # Losses
-try:
-    from SNNLoss import SNNLoss
-except:
-    from utils.SNNLoss import SNNLoss
+from SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -273,7 +270,7 @@ class ResNet(nn.Module):
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
-        :param classifier: string, ['fc', 'svm']
+        :param classifier: string, ['fc'] In future 'svm' could be added
         """
         # Setting up training framework
         self = self.to(DEVICE)
@@ -315,13 +312,6 @@ class ResNet(nn.Module):
         print(f'Training on {len(loader)*self.batch_size} images...')
         total_loss = math.nan
 
-        if classifier == 'svm':
-            new_classes = []
-            for _, labels in loader:
-                for label in labels:
-                    if label not in self.learned_classes:
-                        new_classes.append(label.item())
-
         epochs = range(self.num_epochs) if verbose else tqdm(range(self.num_epochs))
         for epoch in epochs:
             if verbose:
@@ -330,16 +320,6 @@ class ResNet(nn.Module):
                     total_loss,
                     scheduler.get_last_lr()
                 ))
-            
-            if classifier == 'svm':
-                clf = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
-                
-                self.learned_classes.update(new_classes)
-                self.store_exemplars(train_dataset, policy='random')
-                self.learned_classes.difference_update(new_classes) # Remove items in new_classes from set
-
-                X, y = self.get_fittable_from_exemplars()
-                clf.fit(X, y)
 
             total_loss = 0.0
             total_training = 0
@@ -359,11 +339,7 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-                if classifier == 'fc':
-                    outputs = self.forward(images)
-                elif classifier == 'svm':
-                    outputs = self.get_predictions_from_classifier(images, clf)
-                    outputs = F.one_hot(outputs, num_classes=self.num_classes)
+                outputs = self.forward(images)
 
                 # Compute loss
                 if self.lwf and self.iterations > 0:
@@ -460,7 +436,7 @@ class ResNet(nn.Module):
             # Take representations of the exemplars of this label
             current_representations = value['representation']
             
-            # Map each tensor to a numpy array (after putting it in CPU)
+            # Map each tensor to a numpy array (after putting it in CPU and detaching it from the graph)
             # and add them to the X list
             X += list(map(lambda tensor: tensor.cpu().detach().numpy(), current_representations))
             y += [label] * len(value['exemplars'])
