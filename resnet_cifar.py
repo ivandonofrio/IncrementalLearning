@@ -8,6 +8,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parameter import Parameter
 import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
@@ -27,7 +28,7 @@ from torchvision import transforms
 from tqdm import tqdm, tqdm_gui
 
 # Losses
-from SNNLoss import SNNLoss
+from .SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -44,7 +45,7 @@ def conv3x3(in_planes, out_planes, stride=1):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, last=False):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -53,6 +54,7 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
+        self.last = last
 
     def forward(self, x):
         residual = x
@@ -68,7 +70,8 @@ class BasicBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
-        out = self.relu(out)
+        if not self.last:
+            out = self.relu(out)
 
         return out
 
@@ -118,6 +121,7 @@ class LabelledDataset(Dataset):
 
     Arguments:
         data (list of tuples (image, label)): list of labelled images
+		transform: torchvision transformations to apply to input data
     '''
     def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
@@ -140,9 +144,45 @@ class LabelledDataset(Dataset):
         return image, label
 
 
+class CosineLayer(nn.Module):
+
+    def __init__(self, in_features, out_features, sigma=True):
+        super(CosineLayer, self).__init__()
+
+        # Setup layer dimenstions
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(torch.Tensor(out_features, in_features))
+
+        # Setup layer sigma parameter
+        self.sigma = Parameter(torch.Tensor(1)) if sigma else None
+
+        # Reset layer parameter
+        self.reset_parameters()
+
+    def reset_parameters(self):
+
+        std = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-std, std)
+
+        if self.sigma is not None:
+            self.sigma.data.fill_(1)
+
+    def forward(self, x):
+
+        # Compute output
+        x = F.linear(F.normalize(x), F.normalize(self.weight))
+
+        # Scale by sigma if set
+        if self.sigma is not None:
+            x = self.sigma * x
+
+        return x
+
+
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, lwf, use_exemplars, ncm, num_classes=10, k=5000, loss=None):
+    def __init__(self, block, layers, parameters, use_exemplars, last_layer='std', num_classes=10, k=5000, loss='bce'):
         super(ResNet, self).__init__()
         """
         Make Incremental Learning ResNets great again!
@@ -150,9 +190,10 @@ class ResNet(nn.Module):
         :param block:
         :param layers:
         :param parameters:
-        :param lwf: bool, enable Learning without Forgetting
+        # :param lwf: bool, enable Learning without Forgetting
         :param use_exemplars: bool, store exemplars at the end of an iteration
-        :param ncm: bool, enable Nearest Class Mean
+		    :param last_layer: string, 'cos' or 'std', use a cosine layer or a standard fully connected as last layer
+        # :param ncm: bool, enable Nearest Class Mean
         :param num_classes: int, number of initial classes
         """
 
@@ -163,9 +204,18 @@ class ResNet(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.layer1 = self._make_layer(block, 16, layers[0])
         self.layer2 = self._make_layer(block, 32, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
+        if last_layer == 'cos':
+            self.layer3 = self._make_layer(block, 64, layers[2], stride=2, last_phase=True)
+        else:
+            self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
         self.avgpool = nn.AvgPool2d(8, stride=1)
-        self.fc = nn.Linear(64 * block.expansion, num_classes)
+        
+        if last_layer == 'std':
+            self.fc = nn.Linear(64 * block.expansion, num_classes)
+        elif last_layer == 'cos':
+            self.fc = CosineLayer(64 * block.expansion, num_classes)
+        else:
+            raise(ValueError('Unknown last layer type'))
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -194,9 +244,9 @@ class ResNet(nn.Module):
         self.loss = loss
 
         # Set utils structures
-        self.lwf = lwf
+        # self.lwf = lwf
         self.use_exemplars = use_exemplars
-        self.ncm = ncm
+        # self.ncm = ncm
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
@@ -210,7 +260,7 @@ class ResNet(nn.Module):
         # Exemplars structure
         self.exemplars = {}
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, last_phase=False):
 
         downsample = None
 
@@ -225,19 +275,25 @@ class ResNet(nn.Module):
         layers.append(block(self.inplanes, planes, stride, downsample))
         self.inplanes = planes * block.expansion
 
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+        if last_phase:
+            for i in range(1, blocks-1):
+                layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes, last=True))
+        else:
+            for i in range(1, blocks):
+                layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, get_only_features=False):
+    def forward(self, x, get_only_features=False, get_also_features=False):
         """
         Give me an image and I will tell you what it could be
         (or how you can represent it if you pass me get_only_features=True)
 
         :param x: An image that you would never recognize
         :param get_only_features: bool, if False returns the output from the last FC layer
-            if True returns la output from the penultimate layer
+            if True returns output from the penultimate layer
+		    :param get_also_features: bool, if True returns both
         """
         x = self.conv1(x)
         x = self.bn1(x)
@@ -252,12 +308,16 @@ class ResNet(nn.Module):
 
         if get_only_features:
             return x
+        f = x.clone().detach()
 
         x = self.fc(x)
+
+        if get_also_features:
+            return x, f
         return x
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None,
-                         verbose=False, validation_step=5, classes_at_time=10,
+                         verbose=False, validation_step=5, classes_at_time=10, distillation=None,
                          policy='random', transform=None, classifier='fc', **classifier_kwargs):
         """
         Train me!
@@ -268,28 +328,32 @@ class ResNet(nn.Module):
         :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
+		    :param distillation: string, which distillation approach must be used, ['lwf','lfc']
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
         :param classifier: string, ['fc'] In future 'svm' could be added
         """
         # Setting up training framework
+        torch.cuda.set_device(0)
         self = self.to(DEVICE)
         cudnn.benchmark
         current_classes = set()
-
-        # Setting up data structures for statistics
-        epochs_stats = {}
-        last_time = time.time()
 
         # Check if a previous state must be loaded
         if state_dict:
             self.load_state_dict(state_dict)
 
         # Store and freeze current network
-        if self.lwf:
+        if distillation:
             old = deepcopy(self)
             for p in old.parameters():
                 p.requires_grad = False
+
+		      	# Parameters for less forget constraint
+            if distillation == 'lfc' and self.iterations > 0:
+                lmbd = 5 * ((len(self.learned_classes)/10) ** 0.5)
+                K = 2
+                print(f'Training with lambda {lmbd}')
 
         # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
@@ -297,6 +361,7 @@ class ResNet(nn.Module):
 
         # Generate and load training dataset
         dataset = LabelledDataset(train_dataset, transform)
+        new_classes = set([x[1] for x in train_dataset])
         if self.use_exemplars:
 
             # Merge new training image and exemplars
@@ -308,8 +373,12 @@ class ResNet(nn.Module):
 
             dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
 
-        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, drop_last=True)
-        print(f'Training on {len(loader)*self.batch_size} images...')
+        # Setting up data structures for statistics
+        epochs_stats = {}
+        last_time = time.time()
+
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+        print(f'Training on {len(loader.dataset)} images...')
         total_loss = math.nan
 
         epochs = range(self.num_epochs) if verbose else tqdm(range(self.num_epochs))
@@ -331,6 +400,9 @@ class ResNet(nn.Module):
                     target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
                 else:
                     target = labels.to(DEVICE)
+				        # Initialise losses for lfc
+                loss1 = torch.zeros(1).to(DEVICE)
+                loss3 = torch.zeros(1).to(DEVICE)
 
                 self.train()
 
@@ -339,30 +411,64 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-                outputs = self.forward(images)
+				        # Get also input features for cosine
+                outputs, cur_features = self.forward(images, get_also_features=True)
 
                 # Compute loss
-                if self.lwf and self.iterations > 0:
+                if distillation and self.iterations > 0:
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
                         output_old = old(images).to(DEVICE)
+                        # Get input features according to old network
+                        old_features = old(images, get_only_features=True).detach()
+                        if not isinstance(old.fc, CosineLayer):
+                            old_features = F.normalize(old_features)
 
-                    if self.loss == 'bce':
-                        # Include old predictions for distillation
-                        target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                        if self.loss == 'bce':
+                            if distillation == 'lwf':
+                                # Include old predictions for distillation
+                                target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                            elif distillation == 'lfc':
+                                # Try to preserve direction of old features
+                                if not isinstance(self.fc, CosineLayer):
+                                    cur_features = F.normalize(cur_features)
+                                loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
+									                          torch.ones(images.shape[0]).to(DEVICE)) * lmbd
+                                            
+                                # Preserve margin
+                                old_scores = F.normalize(outputs[:,list(self.learned_classes)])
+                                new_scores = F.normalize(outputs[:,list(new_classes)])
+                                outputs_bs = torch.cat((old_scores, new_scores), dim=1)
+                                # print(outputs_bs, outputs_bs.shape)
+                                gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
+                                # print(gt_index)
+                                gt_index = gt_index.scatter(1, labels.to(DEVICE).view(-1,1), 1).ge(0.5)
+                                # print(gt_index)
+                                gt_scores = outputs_bs.masked_select(gt_index)
+                                max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
+                                hard_index = [l in self.learned_classes for l in labels]
+                                if any(hard_index):
+                                    gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
+                                    max_novel_scores = max_novel_scores[hard_index]
+                                    loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
+                                                  max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE))
+                            else:
+                                raise ValueError("Unknown distillation loss")
                     
-                    elif self.loss == 'snn':
-                        outputs += output_old
-                        target += target
+                        elif self.loss == 'snn':
+                            outputs += output_old
+                            target += target
 
-                    else:
-                        raise ValueError("I'm sorry man, I don't know how to hande this loss with LwF")
+                        else:
+                          raise ValueError("I'm sorry man, I don't know how to hande this loss with LwF")
 
                 if self.loss == 'snn':
                     loss = self.criterion(outputs, target, temp=self.snn_temperature)
                 else:
                     loss = self.criterion(outputs, target)
+                    # lfc + margin rank
+                    loss = loss1 + loss + loss3
 
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
@@ -465,9 +571,10 @@ class ResNet(nn.Module):
 
     def perform_test(self, dataset, transform=None, classifier='fc', **classifier_kwargs):
         """
-        :param classifier: string, ['fc', 'ncm', 'svm', 'knn', 'rf'], where:
+        :param classifier: string, ['fc', 'ncm', 'cos', 'svm', 'knn', 'rf'], where:
             - fc: last fully connected layer (standard ResNet)
             - ncm: nearest class mean
+			- cos: cosine similarity
             - svm: SVM
             - knn: k-NN
             - rf: random forest
@@ -521,6 +628,9 @@ class ResNet(nn.Module):
                 elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
+					
+                elif classifier == 'cos':
+                    preds = self.get_most_similar_cos(images)
 
                 elif classifier in ['svm', 'knn', 'rf']:
                     preds = self.get_predictions_from_classifier(images, self.clf[classifier])
@@ -698,18 +808,36 @@ class ResNet(nn.Module):
                 preds.append(pred)
 
         return torch.Tensor(preds).to(DEVICE)
+		
+    def get_most_similar_cos(self, images):
 
-def resnet20(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+        self.eval()
+        with torch.no_grad():
+
+            features = self.forward(images, get_only_features=True).detach()
+            features = F.normalize(features)
+            preds = []
+            similarity = nn.CosineSimilarity(dim=0)
+
+            for map in features:
+
+                dst = {label:(similarity(map, self.exemplars[label]['mean'].to(DEVICE))) for label in self.exemplars.keys()}
+                pred = max(dst, key=dst.get)
+                preds.append(pred)
+
+        return torch.Tensor(preds).to(DEVICE)
+
+def resnet20(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 3
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
 
-def resnet32(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+def resnet32(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 5
-    model = ResNet(BasicBlock, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(BasicBlock, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
 
-def resnet56(parameters, pretrained=False, lwf=False, use_exemplars=False, ncm=False, **kwargs):
+def resnet56(parameters, pretrained=False, use_exemplars=False, **kwargs):
     n = 9
-    model = ResNet(Bottleneck, [n, n, n], parameters, lwf, use_exemplars, ncm, **kwargs)
+    model = ResNet(Bottleneck, [n, n, n], parameters, use_exemplars, **kwargs)
     return model
