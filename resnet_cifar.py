@@ -620,10 +620,7 @@ class ResNet(nn.Module):
                 images, labels = (images.to(DEVICE), labels.to(DEVICE))
 
                 if classifier == 'ncm':
-                    if self.ncm:
-                        preds = self.get_nearest_classes(images)
-                    else:
-                        raise ValueError("The model is not trained on NCM")
+                    preds = self.get_nearest_classes(images)
 
                 elif classifier == 'fc':
                     outputs = self.forward(images)
