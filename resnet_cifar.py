@@ -28,7 +28,10 @@ from torchvision import transforms
 from tqdm import tqdm, tqdm_gui
 
 # Losses
-from .SNNLoss import SNNLoss
+try:
+    from .SNNLoss import SNNLoss
+except:
+    from utils.SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -318,7 +321,7 @@ class ResNet(nn.Module):
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None,
                          verbose=False, validation_step=5, classes_at_time=10, distillation=None,
-                         policy='random', transform=None, classifier='fc', **classifier_kwargs):
+                         policy='random', transform=None, generate_random_exemplars=0):
         """
         Train me!
 
@@ -328,10 +331,10 @@ class ResNet(nn.Module):
         :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
-		    :param distillation: string, which distillation approach must be used, ['lwf','lfc']
+		:param distillation: string, which distillation approach must be used, ['lwf','lfc']
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
-        :param classifier: string, ['fc'] In future 'svm' could be added
+        :param generate_random_exemplars: int, number of random images to generate to add to the exemplars
         """
         # Setting up training framework
         torch.cuda.set_device(0)
@@ -359,8 +362,12 @@ class ResNet(nn.Module):
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
+        # List of datasets to concatenate
+        datasets_to_concatenate = []
+
         # Generate and load training dataset
-        dataset = LabelledDataset(train_dataset, transform)
+        datasets_to_concatenate.append(LabelledDataset(train_dataset, transform))
+
         new_classes = set([x[1] for x in train_dataset])
         if self.use_exemplars:
 
@@ -370,8 +377,27 @@ class ResNet(nn.Module):
             for label in self.exemplars.keys():
                 for image in self.exemplars[label]['exemplars']:
                     exemplars_dataset.append((image, label))
+            datasets_to_concatenate.append(LabelledDataset(exemplars_dataset, transform))
 
-            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+            # Pseudoreharsal
+            if generate_random_exemplars > 0 and len(self.learned_classes) > 0:
+                # Generate a random Tensor, transform it to a PIL Image, transform this image applying
+                # the train transformations, do it generate_random_exemplars times
+                random_images = [transforms.ToPILImage()(torch.rand((3, 32, 32))) for _ in range(generate_random_exemplars)]
+                transformed_random_images = list(map(transform, random_images))
+                
+                # Convert list to Tensor
+                transformed_random_images = torch.stack(transformed_random_images).to(DEVICE)
+                
+                # Forward pass images and compute label
+                outputs = self.forward(transformed_random_images)
+                _, preds = torch.max(outputs.data, 1)
+
+                pseudoreharsal_dataset = list(zip(random_images, preds.cpu().detach().numpy()))
+                
+                datasets_to_concatenate.append(LabelledDataset(pseudoreharsal_dataset, transform))
+
+            dataset = ConcatDataset(datasets_to_concatenate)
 
         # Setting up data structures for statistics
         epochs_stats = {}
