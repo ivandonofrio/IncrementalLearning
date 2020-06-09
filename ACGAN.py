@@ -34,7 +34,7 @@ class Generator(nn.Module):
         x = F.relu(self.ct3_bn(self.ct3(x)))
         x = F.relu(self.ct4_bn(self.ct4(x)))
         x = F.tanh(self.ct5(x))
-        
+
         return x
 
     def init_weights(self, mean, std):
@@ -42,8 +42,10 @@ class Generator(nn.Module):
             normal_init(self._modules[m], mean, std, False)
 
 class Discriminator(nn.Module):
+
     def __init__(self, d=16, c=1, num_classes=10):
         super(Discriminator, self).__init__()
+
         self.d = d
         self.conv1 = nn.Conv2d(c, d, 3, 2, 1, bias=False)
         self.Drop1 = nn.Dropout(0.5)
@@ -74,9 +76,8 @@ class Discriminator(nn.Module):
         self.softmax = nn.Softmax()
         self.sigmoid = nn.Sigmoid()
 
-        print(self)
-
     def forward(self, img, get_features=False, T=1):
+
         x = self.Drop1(F.leaky_relu(self.conv1(img), 0.2))
         x = self.Drop2(F.leaky_relu(self.conv2_bn(self.conv2(x)), 0.2))
         x = self.Drop3(F.leaky_relu(self.conv3_bn(self.conv3(x)), 0.2))
@@ -84,14 +85,16 @@ class Discriminator(nn.Module):
         x = self.Drop5(F.leaky_relu(self.conv5_bn(self.conv5(x)), 0.2))
         x = self.Drop6(F.leaky_relu(self.conv6_bn(self.conv6(x)), 0.2))
 
-        #When d=16, d*32=512, TODO
         x = x.view(-1, 4*4*self.d*32)
         fc_aux = self.fc_aux(x)
+
         if get_features:
             return fc_aux
+
         fc_dis = self.fc_dis(x)
         liklihood_correct_class = self.softmax(fc_aux/T)
         liklihood_real_img = self.sigmoid(fc_dis).view(-1,1).squeeze(1)
+
         return liklihood_real_img, liklihood_correct_class
 
     def init_weights(self, mean, std):
