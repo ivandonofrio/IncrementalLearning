@@ -31,7 +31,7 @@ from tqdm import tqdm, tqdm_gui
 from .SNNLoss import SNNLoss
 
 # GAN
-from .ACGAN import Generator, Discriminator
+from .ACGAN import ACGAN
 
 DEVICE = 'cuda'
 
@@ -185,7 +185,7 @@ class CosineLayer(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, parameters, use_exemplars, use_gan, last_layer='std', num_classes=10, k=5000, loss='bce'):
+    def __init__(self, block, layers, parameters, use_exemplars, last_layer='std', num_classes=10, k=5000, loss='bce'):
         super(ResNet, self).__init__()
         """
         Make Incremental Learning ResNets great again!
@@ -255,20 +255,8 @@ class ResNet(nn.Module):
         self.k = k
         self.processed_images = 0
 
-        if use_gan:
-            gen = Generator()
-            gen.init_weights()
-            gen.to(DEVICE)
-
-            discr = Discriminator()
-            discr.init_weights()
-            discr.to(DEVICE)
-
-            gen_opt = torch.optim.Adam(gen.parameters(), lr=0.0002, betas=(0.5, 0.999))
-            discr_opt = torch.optim.Adam(discr.parameters(), lr=0.0002, betas=(0.5, 0.999))
-
-            adv_loss = torch.nn.BCELoss()
-            aux_loss = torch.nn.CrossEntropyLoss()            
+		# Initialise GAN
+        self.gan = ACGAN()           
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
@@ -374,7 +362,7 @@ class ResNet(nn.Module):
                 print(f'Training with lambda {lmbd}')
 
         # Generate exemplars for old classes
-        if self.use_gan and self.iterations > 0:
+        #if self.use_gan and self.iterations > 0:
             # TODO, generate exemplars
 
         # Optimizer and scheduler setup
@@ -538,6 +526,10 @@ class ResNet(nn.Module):
 
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
+
+		# Reload dataloader and train GAN
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+        self.gan.train(loader)
 
         return epochs_stats
 
