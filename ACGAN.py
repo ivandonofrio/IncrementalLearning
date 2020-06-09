@@ -1,115 +1,178 @@
-import torch
+import argparse
+import os
+import numpy as np
+import math
+
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+
+from torch.utils.data import DataLoader
+from torchvision import datasets
+from torch.autograd import Variable
+
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 
+DEVICE = 'cuda'
 
-def normal_init(m, mean, std, has_bias=True):
-
-    if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
-
-        m.weight.data.normal_(mean, std)
-        if has_bias:
-            m.bias.data.zero_()
-
-    elif isinstance(m, nn.BatchNorm2d):
-
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
+def weights_init_normal(m):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find("BatchNorm2d") != -1:
+        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
+        torch.nn.init.constant_(m.bias.data, 0.0)
 
 
 class Generator(nn.Module):
-
-    def __init__(self, d=384, c=1, num_classes=10, nz=100):
+    def __init__(self):
         super(Generator, self).__init__()
 
-        self.d = d
-        self.nz = nz
-        self.num_classes = num_classes
-        self.fc1 = nn.Linear(nz+num_classes, d)
+        self.label_emb = nn.Embedding(100, 100)
 
-        self.ct2 = nn.ConvTranspose2d(d, d//2, 4, 1, 0, bias=False)
-        self.ct2_bn = nn.BatchNorm2d(d//2)
+        self.init_size = 32 // 4  # Initial size before upsampling
+        self.l1 = nn.Sequential(nn.Linear(100, 128 * self.init_size ** 2))
 
-        self.ct3 = nn.ConvTranspose2d(d//2, d//4, 4, 2, 1, bias=False)
-        self.ct3_bn = nn.BatchNorm2d(d//4)
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm2d(128),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, stride=1, padding=1),
+            nn.BatchNorm2d(64, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 3, 3, stride=1, padding=1),
+            nn.Tanh(),
+        )
 
-        self.ct4 = nn.ConvTranspose2d(d//4, d//8, 4, 2, 1, bias=False)
-        self.ct4_bn = nn.BatchNorm2d(d//8)
+    def forward(self, noise, labels):
+        gen_input = torch.mul(self.label_emb(labels), noise)
+        out = self.l1(gen_input)
+        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
+        img = self.conv_blocks(out)
+        return img
 
-        self.ct5 = nn.ConvTranspose2d(d//8, c, 4, 2, 1, bias=False)
+    def init_weights(self):
+        self.apply(weights_init_normal)
 
-    def forward(self, input):
-
-        x = input.view(-1, self.nz + self.num_classes)
-        x = self.fc1(x)
-        x = x.view(-1, self.d, 1, 1)
-        x = F.relu(self.ct2_bn(self.ct2(x)))
-        x = F.relu(self.ct3_bn(self.ct3(x)))
-        x = F.relu(self.ct4_bn(self.ct4(x)))
-        x = F.tanh(self.ct5(x))
-
-        return x
-
-    def init_weights(self, mean, std):
-        for m in self._modules:
-            normal_init(self._modules[m], mean, std, False)
 
 class Discriminator(nn.Module):
-
-    def __init__(self, d=16, c=1, num_classes=10):
+    def __init__(self):
         super(Discriminator, self).__init__()
 
-        self.d = d
-        self.conv1 = nn.Conv2d(c, d, 3, 2, 1, bias=False)
-        self.Drop1 = nn.Dropout(0.5)
+        def discriminator_block(in_filters, out_filters, bn=True):
+            """Returns layers of each discriminator block"""
+            block = [nn.Conv2d(in_filters, out_filters, 3, 2, 1), nn.LeakyReLU(0.2, inplace=True), nn.Dropout2d(0.25)]
+            if bn:
+                block.append(nn.BatchNorm2d(out_filters, 0.8))
+            return block
 
-        self.conv2 = nn.Conv2d(d, d*2, 3, 1, 1, bias=False)
-        self.conv2_bn = nn.BatchNorm2d(d*2)
-        self.Drop2 = nn.Dropout(0.5)
+        self.conv_blocks = nn.Sequential(
+            *discriminator_block(3, 16, bn=False),
+            *discriminator_block(16, 32),
+            *discriminator_block(32, 64),
+            *discriminator_block(64, 128),
+        )
 
-        self.conv3 = nn.Conv2d(d*2, d*4, 3, 2, 1, bias=False)
-        self.conv3_bn = nn.BatchNorm2d(d*4)
-        self.Drop3 = nn.Dropout(0.5)
+        # The height and width of downsampled image
+        ds_size = 32 // 2 ** 4
 
-        self.conv4 = nn.Conv2d(d*4, d*8, 3, 1, 1, bias=False)
-        self.conv4_bn = nn.BatchNorm2d(d*8)
-        self.Drop4 = nn.Dropout(0.5)
+        # Output layers
+        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
+        self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 100), nn.Softmax())
 
-        self.conv5 = nn.Conv2d(d*8, d*16, 3, 2, 1, bias=False)
-        self.conv5_bn = nn.BatchNorm2d(d*16)
-        self.Drop5 = nn.Dropout(0.5)
+    def forward(self, img):
+        out = self.conv_blocks(img)
+        out = out.view(out.shape[0], -1)
+        validity = self.adv_layer(out)
+        label = self.aux_layer(out)
 
-        self.conv6 = nn.Conv2d(d*16, d*32, 3, 1, 1, bias=False)
-        self.conv6_bn = nn.BatchNorm2d(d*32)
-        self.Drop6 = nn.Dropout(0.5)
+        return validity, label
 
-        self.fc_dis = nn.Linear(4*4*d*32, 1)
-        self.fc_aux = nn.Linear(4*4*d*32, num_classes)
+    def init_weights(self):
+        self.apply(weights_init_normal)
 
-        self.softmax = nn.Softmax()
-        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, img, get_features=False, T=1):
+class ACGAN():
+    def __init__(self):
+        self.gen = Generator()
+        self.gen.init_weights()
+        self.gen.to(DEVICE)
 
-        x = self.Drop1(F.leaky_relu(self.conv1(img), 0.2))
-        x = self.Drop2(F.leaky_relu(self.conv2_bn(self.conv2(x)), 0.2))
-        x = self.Drop3(F.leaky_relu(self.conv3_bn(self.conv3(x)), 0.2))
-        x = self.Drop4(F.leaky_relu(self.conv4_bn(self.conv4(x)), 0.2))
-        x = self.Drop5(F.leaky_relu(self.conv5_bn(self.conv5(x)), 0.2))
-        x = self.Drop6(F.leaky_relu(self.conv6_bn(self.conv6(x)), 0.2))
+        self.discr = Discriminator()
+        self.discr.init_weights()
+        self.discr.to(DEVICE)
 
-        x = x.view(-1, 4*4*self.d*32)
-        fc_aux = self.fc_aux(x)
+        self.gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.0002, betas=(0.5, 0.999))
+        self.discr_opt = torch.optim.Adam(self.discr.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
-        if get_features:
-            return fc_aux
+        self.adv_loss = torch.nn.BCELoss()
+        self.aux_loss = torch.nn.CrossEntropyLoss()  
 
-        fc_dis = self.fc_dis(x)
-        liklihood_correct_class = self.softmax(fc_aux/T)
-        liklihood_real_img = self.sigmoid(fc_dis).view(-1,1).squeeze(1)
+    def train(self, loader):
+        for epoch in range(2):
+            for images, labels in loader:
+                batch_size = images.shape[0]
 
-        return liklihood_real_img, liklihood_correct_class
+                # Adversarial ground truths
+                # valid = torch.FloatTensor(batch_size, 1, requires_grad=False).fill_(1.0)
+                valid = torch.ones(batch_size, 1, requires_grad=False, dtype=torch.float).to(DEVICE)
+                # fake = torch.FloatTensor(batch_size, 1, requires_grad=False).fill_(0.0)
+                fake = torch.zeros(batch_size, 1, requires_grad=False, dtype=torch.float).to(DEVICE)
 
-    def init_weights(self, mean, std):
-        for m in self._modules:
-            normal_init(self._modules[m], mean, std, False)
+                # Configure input
+                real_imgs = torch.FloatTensor(images).to(DEVICE)
+                labels = torch.LongTensor(labels).to(DEVICE)
+
+                # -----------------
+                #  Train Generator
+                # -----------------
+
+                self.gen_opt.zero_grad()
+
+                # Sample noise and labels as generator input
+                z = torch.FloatTensor(np.random.normal(0, 1, (batch_size, 100))).to(DEVICE)
+                gen_labels = torch.LongTensor(np.random.randint(0, 100, batch_size)).to(DEVICE)
+
+                # Generate a batch of images
+                gen_imgs = self.gen(z, gen_labels)
+
+                # Loss measures generator's ability to fool the discriminator
+                validity, pred_label = self.discr(gen_imgs)
+                g_loss = 0.5 * (self.adv_loss(validity, valid) + self.aux_loss(pred_label, gen_labels))
+
+                g_loss.backward()
+                self.gen_opt.step()
+
+                # ---------------------
+                #  Train Discriminator
+                # ---------------------
+
+                self.discr_opt.zero_grad()
+
+                # Loss for real images
+                real_pred, real_aux = self.discr(real_imgs)
+                d_real_loss = (self.adv_loss(real_pred, valid) + self.aux_loss(real_aux, labels)) / 2
+
+                # Loss for fake images
+                fake_pred, fake_aux = self.discr(gen_imgs.detach())
+                d_fake_loss = (self.adv_loss(fake_pred, fake) + self.aux_loss(fake_aux, gen_labels)) / 2
+
+                # Total discriminator loss
+                d_loss = (d_real_loss + d_fake_loss) / 2
+
+                # Calculate discriminator accuracy
+                pred = np.concatenate([real_aux.data.cpu().numpy(), fake_aux.data.cpu().numpy()], axis=0)
+                gt = np.concatenate([labels.data.cpu().numpy(), gen_labels.data.cpu().numpy()], axis=0)
+                d_acc = np.mean(np.argmax(pred, axis=1) == gt)
+
+                d_loss.backward()
+                self.discr_opt.step()
+
+                print(
+                    "[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %d%%] [G loss: %f]"
+                    % (epoch, 100, 2, len(loader), d_loss.item(), 100 * d_acc, g_loss.item())
+                )
