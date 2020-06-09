@@ -1,8 +1,21 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .gan_utils import normal_init
+
+
+def normal_init(m, mean, std, has_bias=True):
+
+    if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
+
+        m.weight.data.normal_(mean, std)
+        if has_bias:
+            m.bias.data.zero_()
+
+    elif isinstance(m, nn.BatchNorm2d):
+
+        m.weight.data.normal_(1.0, 0.02)
+        m.bias.data.fill_(0)
+
 
 class Generator(nn.Module):
 
