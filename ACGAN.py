@@ -138,7 +138,8 @@ class ACGAN():
         self.discr = self.discr.to(DEVICE)
 
         self.adv_criterion = torch.nn.BCELoss()
-        self.aux_criterion = torch.nn.CrossEntropyLoss()  
+        self.aux_criterion = torch.nn.NLLLoss()
+        # self.aux_criterion = torch.nn.CrossEntropyLoss()  
 
     def generate_examples(self, num_examples, active_classes, save=False, use_discr=False):
         '''
@@ -161,8 +162,9 @@ class ACGAN():
             #        param.requires_grad = False
             examples = {}
             num_iter = 0
-            for idx, klass in enumerate(active_classes):
+            for klass in active_classes:
                 while ((not klass in examples.keys()) or (len(examples[klass]) < num_examples)):
+                    print(f'Generating for class {klass}, iteration {num_iter}')
                     num_iter += 1
 
                     targets = np.zeros((10, self.num_classes))

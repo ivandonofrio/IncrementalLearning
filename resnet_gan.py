@@ -361,16 +361,17 @@ class ResNet(nn.Module):
                 K = 2
                 print(f'Training with lambda {lmbd}')
 
-        # Generate exemplars for old classes
-        #if self.use_gan and self.iterations > 0:
-            # TODO, generate exemplars
-
         # Optimizer and scheduler setup
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
+        # List of datasets to concatenate
+        datasets_to_concatenate = []
+        synt_dataset = []
+
         # Generate and load training dataset
-        dataset = LabelledDataset(train_dataset, transform)
+        datasets_to_concatenate.append(LabelledDataset(train_dataset, transform))
+
         new_classes = set([x[1] for x in train_dataset])
         if self.use_exemplars:
 
@@ -378,10 +379,26 @@ class ResNet(nn.Module):
             exemplars_dataset = []
 
             for label in self.exemplars.keys():
+                num_exemplars = len(self.exemplars[label]['exemplars'])
                 for image in self.exemplars[label]['exemplars']:
                     exemplars_dataset.append((image, label))
+            datasets_to_concatenate.append(LabelledDataset(exemplars_dataset, transform))
 
-            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+            # Get syntethic images
+            if self.iterations > 0:
+                num_synt = max(0, 100 - num_exemplars)
+                print(f'Generating {num_synt} exemplars for {len(self.learned_classes)} classes...')
+                start = time.time()
+                generated = self.gan.generate_examples(num_synt, list(self.learned_classes), save=False, use_discr=True)
+                print(f"Generation took {time.time() - start} seconds!")
+                
+                for label in generated.keys():
+                    for img in generated[label]:
+                        synt_dataset.append((img, label))
+                
+                datasets_to_concatenate.append(LabelledDataset(synt_dataset))
+
+            dataset = ConcatDataset(datasets_to_concatenate)
 
         # Setting up data structures for statistics
         epochs_stats = {}
@@ -527,15 +544,24 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-		    # Reload dataloader and train GAN
-        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+		    # Reload dataloader without augmentation and train GAN
+        norm_transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                ])
+        dataset_for_gan = ConcatDataset([
+            LabelledDataset(train_dataset, norm_transform),
+            LabelledDataset(exemplars_dataset, norm_transform),
+            LabelledDataset(synt_dataset)
+        ])
+        loader = DataLoader(dataset_for_gan, batch_size=self.batch_size, shuffle=True, num_workers=4)
         self.gan.train(loader, list(self.learned_classes))
-        print("Generate 10 images for {} classes...".format(len(self.learned_classes)))
-        start = time.time()
-        generated = self.gan.generate_examples(10, list(self.learned_classes), save=True, use_discr=True)
-        print("Generation required {} seconds".format(time.time() - start))
+        # print("Generate 10 images for {} classes...".format(len(self.learned_classes)))
+        # start = time.time()
+        # generated = self.gan.generate_examples(10, list(self.learned_classes), save=True, use_discr=True)
+        # print("Generation required {} seconds".format(time.time() - start))
 
-        return epochs_stats, generated
+        return epochs_stats, synt_dataset
 
     def get_fittable_from_exemplars(self, exemplars = None):
         """
