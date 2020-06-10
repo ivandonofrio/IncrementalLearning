@@ -186,9 +186,9 @@ class ACGAN():
                     #         continue
                     #     images = torch.index_select(images, 0, indices)
                     if not klass in examples.keys():
-                        examples[klass] = images
+                        examples[klass] = images.cpu()
                     else:
-                        examples[klass] = torch.cat((examples[klass],images), dim=0)
+                        examples[klass] = torch.cat((examples[klass],images), dim=0).cpu()
 
                 # Dont save more than the required number of classes
                 if save:
