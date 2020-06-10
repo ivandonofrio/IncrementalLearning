@@ -30,73 +30,6 @@ def normal_init(m, mean, std, has_bias=True):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
-def generate_examples(G, num_examples, active_classes, total_classes, epoch, save=False, D=None):
-    '''
-    Returns a dict[class] of generated samples.
-    In case of Non-Conditional GAN, the samples in the dict are random, they do
-    not correspond to the keys in the dict
-    Just passing in random noise to the generator and storing the results in dict
-    Generates a batch of 100 examples at a time
-    args: args
-    num_examples: Total number of examples to generate
-    active_classes: List of all classes trained on till now
-    total_classes: Total number of classes in the dataset
-    noise: A noise vector of size [100,100,1,1] to generate examples
-    experiment: Experiment object
-    save: If True, also save samples of generated images to disk
-    is_cond: If True, use the label information too (Only use with supported GANs)
-    '''
-    with torch.no_grad():
-        # print("Note: Ignoring the fixed noise")
-        G.eval()
-        #for param in G.parameters():
-        #        param.requires_grad = False
-        if D is not None:
-            D.eval()
-        #if D is not None:
-        #    for param in D.parameters():
-        #        param.requires_grad = False
-        examples = {}
-        num_iter = 0
-        for idx, klass in enumerate(active_classes):
-            while ((not klass in examples.keys()) or (len(examples[klass]) < num_examples)):
-                num_iter += 1
-                
-                targets = np.zeros((100, total_classes))
-                targets[:, klass] = 1
-                nz_noise = np.random.normal(0, 1, (100, 100))
-                combined_noise = np.append(targets, nz_noise, axis=1)
-                noise = torch.from_numpy(combined_noise).to(DEVICE)
-                noise = noise.view(100, 100+total_classes, 1, 1).float()
-
-                images = G(noise)
-
-                if D is not None:
-                    d_output = D(images)
-                    #Select imges that whose real-fake value > filter_val
-                    #indices = (d_output[0] > args.filter_val).nonzero().squeeze()
-                    #Select imges with P(img) belonging to class klass > filter_val
-                    indices = (d_output[1][:, klass] > 0.5).nonzero().squeeze()
-                    if indices.dim() == 0:
-                        continue
-                    images = torch.index_select(images, 0, indices)
-                if not klass in examples.keys():
-                    examples[klass] = images
-                else:
-                    examples[klass] = torch.cat((examples[klass],images), dim=0)
-
-            # Dont save more than the required number of classes
-            if save:
-                for i,img in enumerate(examples[klass]):
-                    save_image(img, f'E{epoch}C{klass}img{i}.png')
-                
-        # Trim extra examples
-        if D is not None:
-            for klass in active_classes:
-                examples[klass] = examples[klass][0:num_examples]
-            print("[INFO] Examples matching the filter: ", len(active_classes) * (num_examples / num_iter), "%")
-        return examples
-
 
 class Generator(nn.Module):
     def __init__(self, d=384, c=3, num_classes=10, nz=100):
@@ -207,6 +140,69 @@ class ACGAN():
         self.adv_criterion = torch.nn.BCELoss()
         self.aux_criterion = torch.nn.CrossEntropyLoss()  
 
+    def generate_examples(self, num_examples, active_classes, save=False, use_discr=False):
+        '''
+        Returns a dict[class] of generated samples.
+        Just passing in random noise to the generator and storing the results in dict
+        Generates a batch of 100 examples at a time
+        num_examples: Total number of examples to generate
+        active_classes: List of all classes trained on till now
+        save: If True, also save samples of generated images to disk
+        '''
+        with torch.no_grad():
+            # print("Note: Ignoring the fixed noise")
+            self.gen.eval()
+            #for param in G.parameters():
+            #        param.requires_grad = False
+            if use_discr:
+                self.discr.eval()
+            #if D is not None:
+            #    for param in D.parameters():
+            #        param.requires_grad = False
+            examples = {}
+            num_iter = 0
+            for idx, klass in enumerate(active_classes):
+                while ((not klass in examples.keys()) or (len(examples[klass]) < num_examples)):
+                    num_iter += 1
+
+                    targets = np.zeros((10, self.num_classes))
+                    targets[:, klass] = 1
+                    nz_noise = np.random.normal(0, 1, (10, 100))
+                    combined_noise = np.append(targets, nz_noise, axis=1)
+                    noise = torch.from_numpy(combined_noise).to(DEVICE)
+                    noise = noise.view(10, 100+self.num_classes, 1, 1).float()
+
+                    images = self.gen(noise)
+
+                    if use_discr:
+                        d_output = self.discr(images)
+                        #Select imges that whose real-fake value > filter_val
+                        #indices = (d_output[0] > args.filter_val).nonzero().squeeze()
+                        #Select imges with P(img) belonging to class klass > filter_val
+                        indices = (d_output[1][:, klass] > 0.5).nonzero().squeeze()
+                        if indices.dim() == 0:
+                            continue
+                        images = torch.index_select(images, 0, indices)
+                    if not klass in examples.keys():
+                        examples[klass] = images
+                    else:
+                        examples[klass] = torch.cat((examples[klass],images), dim=0)
+
+                # Dont save more than the required number of classes
+                if save:
+                    for i,img in enumerate(examples[klass]):
+                        save_image(img, f'C{klass}img{i}.png')
+                    
+            # Trim extra examples
+            if use_discr:
+                for klass in active_classes:
+                    examples[klass] = examples[klass][0:num_examples]
+                print("[INFO] Examples matching the filter: ", len(active_classes) * (num_examples / num_iter), "%")
+
+            self.gen.train()
+            self.discr.train()
+            return examples
+
     def train(self, loader, learned_classes):
         gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.0002, betas=(0.5, 0.999))
         gen_scheduler = optim.lr_scheduler.MultiStepLR(gen_opt, milestones=[20,40], gamma=0.1)
@@ -314,9 +310,3 @@ class ACGAN():
                       epoch + 1, mean_g, mean_d, mean_acc,
                       mean_prob_real, mean_prob_fake, time_taken
                   ))
-
-            if epoch % 10 == 0:
-                print("Generate 10 images for {} classes...".format(len(learned_classes)))
-                start = time.time()
-                _ = generate_examples(self.gen, 10, learned_classes, self.num_classes, epoch, save=True, D=self.discr)
-                print("Generation required {} seconds".format(time.time() - start))

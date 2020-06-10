@@ -256,7 +256,7 @@ class ResNet(nn.Module):
         self.processed_images = 0
 
 		# Initialise GAN
-        self.gan = ACGAN()           
+        self.gan = ACGAN(self.num_classes)           
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
@@ -527,11 +527,15 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-		# Reload dataloader and train GAN
+		    # Reload dataloader and train GAN
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        self.gan.train(loader, self.learned_classes)
+        self.gan.train(loader, list(self.learned_classes))
+        print("Generate 10 images for {} classes...".format(len(self.learned_classes)))
+        start = time.time()
+        generated = self.gan.generate_examples(10, list(self.learned_classes), save=True, use_discr=True)
+        print("Generation required {} seconds".format(time.time() - start))
 
-        return epochs_stats
+        return epochs_stats, generated
 
     def get_fittable_from_exemplars(self, exemplars = None):
         """
