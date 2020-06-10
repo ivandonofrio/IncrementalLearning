@@ -176,15 +176,15 @@ class ACGAN():
 
                     images = self.gen(noise)
 
-                    if use_discr:
-                        d_output = self.discr(images)
-                        #Select imges that whose real-fake value > filter_val
-                        #indices = (d_output[0] > args.filter_val).nonzero().squeeze()
-                        #Select imges with P(img) belonging to class klass > filter_val
-                        indices = (d_output[1][:, klass] > 0.5).nonzero().squeeze()
-                        if indices.dim() == 0:
-                            continue
-                        images = torch.index_select(images, 0, indices)
+                    # if use_discr:
+                    #     d_output = self.discr(images)
+                    #     #Select imges that whose real-fake value > filter_val
+                    #     #indices = (d_output[0] > args.filter_val).nonzero().squeeze()
+                    #     #Select imges with P(img) belonging to class klass > filter_val
+                    #     indices = (d_output[1][:, klass] > 0.2).nonzero().squeeze()
+                    #     if indices.dim() == 0:
+                    #         continue
+                    #     images = torch.index_select(images, 0, indices)
                     if not klass in examples.keys():
                         examples[klass] = images
                     else:
@@ -206,7 +206,7 @@ class ACGAN():
             return examples
 
     def train(self, loader, learned_classes):
-        gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.0002, betas=(0.5, 0.999))
+        gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.002, betas=(0.5, 0.999))
         gen_scheduler = optim.lr_scheduler.MultiStepLR(gen_opt, milestones=[20,40], gamma=0.1)
         
         discr_opt = torch.optim.Adam(self.discr.parameters(), lr=0.0002, betas=(0.5, 0.999))
