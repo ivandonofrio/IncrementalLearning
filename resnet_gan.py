@@ -529,7 +529,7 @@ class ResNet(nn.Module):
 
 		# Reload dataloader and train GAN
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        self.gan.train(loader)
+        self.gan.train(loader, self.learned_classes)
 
         return epochs_stats
 
