@@ -49,7 +49,7 @@ class Generator(nn.Module):
         x = torch.cat([x, y], 1)
         x = F.relu(self.ct2_bn(self.ct2(x)))
         x = F.relu(self.ct3_bn(self.ct3(x)))
-        x = F.tanh(self.ct4(x))
+        x = torch.tanh(self.ct4(x))
         return x
 
     def init_weights(self, mean, std):
@@ -99,7 +99,7 @@ class Discriminator(nn.Module):
             # 520 = 128 * 4 + 8
             x = x.view(-1, 520, 4, 4)
         x = self.conv4(x)
-        x = F.sigmoid(x)
+        x = torch.sigmoid(x)
         return x
 
     def init_weights(self, mean, std):
@@ -115,7 +115,7 @@ class Discriminator(nn.Module):
 
 
 class cDCGAN():
-    def __init__(self, num_classes, criterion=nn.BCELoss):
+    def __init__(self, parameters, num_classes):
         self.num_classes = num_classes
 
         self.gen = Generator(l=num_classes)
@@ -126,7 +126,9 @@ class cDCGAN():
         self.discr.init_weights(mean=0.0, std=0.02)
         self.discr = self.discr.to(DEVICE)
 
-        self.criterion = criterion()
+        self.criterion = parameters['CRITERION']()
+        print(self.criterion)
+        self.parameters = parameters
 
     def generate_examples(self, num_examples, active_classes, save=False):
         '''
@@ -148,7 +150,7 @@ class cDCGAN():
                     # print(f'Generating for class {klass}, iteration {num_iter}')
                     num_iter += 1
 
-                    targets = torch.zeros(100, total_classes, 1, 1)
+                    targets = torch.zeros(100, self.num_classes, 1, 1)
                     targets[:, klass] = 1
                     noise = torch.randn(100, 100, 1, 1).to(DEVICE)
                     targets = targets.to(DEVICE)
@@ -169,11 +171,13 @@ class cDCGAN():
             return examples
 
     def train(self, loader, learned_classes):
-        gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.001, betas=(0.5, 0.999))
-        gen_scheduler = optim.lr_scheduler.MultiStepLR(gen_opt, milestones=[20,30], gamma=0.1)
+        gen_params = self.parameters['GEN_PARAMETERS']
+        gen_opt = gen_params['OPTIMIZER'](self.gen.parameters(), **gen_params['OPTIMIZER_PARAMETERS'])
+        gen_scheduler = gen_params['SCHEDULER'](gen_opt, **gen_params['SCHEDULER_PARAMETERS'])
         
-        discr_opt = torch.optim.Adam(self.discr.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        discr_scheduler = optim.lr_scheduler.MultiStepLR(discr_opt, milestones=[20,30], gamma=0.1)
+        discr_params = self.parameters['DISCR_PARAMETERS']
+        discr_opt = discr_params['OPTIMIZER'](self.discr.parameters(), **discr_params['OPTIMIZER_PARAMETERS'])
+        discr_scheduler = discr_params['SCHEDULER'](discr_opt, **discr_params['SCHEDULER_PARAMETERS'])
         
         tensor = []
         g_vec = torch.zeros(self.num_classes, self.num_classes)
@@ -188,8 +192,7 @@ class cDCGAN():
 
         print("Start training GAN on classes {}".format(learned_classes))
 
-        for epoch in range(40):
-        # for epoch in range(2):
+        for epoch in range(self.parameters['NUM_EPOCHS']):
             d_losses_e = []
             g_losses_e = []
 
@@ -252,7 +255,7 @@ class cDCGAN():
                 g_output = self.gen(g_random_noise, g_random_labels)
                 d_output = self.discr(g_output, d_random_labels).squeeze()
 
-                g_loss = criterion(d_output, d_like_real)
+                g_loss = self.criterion(d_output, d_like_real)
                 g_loss.backward()
                 gen_opt.step()
                 g_losses_e.append(g_loss.cpu().data.numpy())

@@ -258,7 +258,7 @@ class ResNet(nn.Module):
 
 		    # Initialise GAN
         # self.gan = ACGAN(self.num_classes)
-        self.gan = cDCGAN(self.num_classes)
+        self.gan = cDCGAN(parameters['GAN_PARAMETERS'], self.num_classes)
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
@@ -558,10 +558,6 @@ class ResNet(nn.Module):
         ])
         loader = DataLoader(dataset_for_gan, batch_size=self.batch_size, shuffle=True, num_workers=4)
         self.gan.train(loader, list(self.learned_classes))
-        # print("Generate 10 images for {} classes...".format(len(self.learned_classes)))
-        # start = time.time()
-        # generated = self.gan.generate_examples(10, list(self.learned_classes), save=True, use_discr=True)
-        # print("Generation required {} seconds".format(time.time() - start))
 
         return epochs_stats, synt_dataset
 
