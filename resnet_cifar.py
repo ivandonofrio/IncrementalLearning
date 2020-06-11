@@ -1,7 +1,11 @@
 import math
 import time
 import random
+from collections import Counter
+
+import numpy as np
 from numpy import linalg as LA
+
 from copy import deepcopy
 
 import time
@@ -22,6 +26,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+
+# Clustering
+from sklearn.cluster import AffinityPropagation
 
 # PyTorch
 from torchvision import transforms
@@ -209,7 +216,7 @@ class ResNet(nn.Module):
         else:
             self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
         self.avgpool = nn.AvgPool2d(8, stride=1)
-        
+
         if last_layer == 'std':
             self.fc = nn.Linear(64 * block.expansion, num_classes)
         elif last_layer == 'cos':
@@ -435,7 +442,7 @@ class ResNet(nn.Module):
                                     cur_features = F.normalize(cur_features)
                                 loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
 									                          torch.ones(images.shape[0]).to(DEVICE)) * lmbd
-                                            
+
                                 # Preserve margin
                                 old_scores = F.normalize(outputs[:,list(self.learned_classes)])
                                 new_scores = F.normalize(outputs[:,list(new_classes)])
@@ -455,7 +462,7 @@ class ResNet(nn.Module):
                                                   max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE))
                             else:
                                 raise ValueError("Unknown distillation loss")
-                    
+
                         elif self.loss == 'snn':
                             outputs += output_old
                             target += target
@@ -533,20 +540,20 @@ class ResNet(nn.Module):
 
         X = []  # List of features (one for each image)
         y = []  # List of labels
-        
+
         # Convert dictionary of exemplars into:
         # - X: list of all images' representation
         # - y: list of all images' label
         for label, value in exemplars.items(): # For each label
-            
+
             # Take representations of the exemplars of this label
             current_representations = value['representation']
-            
+
             # Map each tensor to a numpy array (after putting it in CPU and detaching it from the graph)
             # and add them to the X list
             X += list(map(lambda tensor: tensor.cpu().detach().numpy(), current_representations))
             y += [label] * len(value['exemplars'])
-        
+
         return X, y
 
     def get_predictions_from_classifier(self, images, clf):
@@ -583,7 +590,7 @@ class ResNet(nn.Module):
         # If classifying with SVM or KNN, and that type of classifier is not cached yet
         if classifier in ['svm', 'knn', 'rf'] and classifier not in self.clf:
             X, y = self.get_fittable_from_exemplars()
-            
+
             if classifier == 'svm':
                 self.clf[classifier] = make_pipeline(StandardScaler(), SVC(**classifier_kwargs))
 
@@ -592,7 +599,7 @@ class ResNet(nn.Module):
 
             elif classifier == 'rf':
                 self.clf[classifier] = RandomForestClassifier(**classifier_kwargs)
-            
+
             self.clf[classifier].fit(X, y)
 
         self = self.to(DEVICE)
@@ -625,7 +632,7 @@ class ResNet(nn.Module):
                 elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
-					
+
                 elif classifier == 'cos':
                     preds = self.get_most_similar_cos(images)
 
@@ -764,6 +771,49 @@ class ResNet(nn.Module):
                         selected_tensors = self.exemplars[label]['tensors'][:batch]
                         selected_representations = features[:batch]
 
+                elif policy == 'cluster':
+
+                    if label in new_classes:
+
+                        # Store class exemplars
+                        current_exemplars = self.exemplars[label]['exemplars'].copy()
+                        current_tensors = self.exemplars[label]['tensors'].copy()
+                        current_representations = features.copy()
+
+                        # Each tensor as input of the algorithm
+                        X = [tensor.cpu().numpy() for tensor in current_representations]
+
+                        cluster = AffinityPropagation(damping=0.8).fit(X)
+                        cluster_count = dict(Counter(cluster.labels_))
+
+                        if len(cluster.cluster_centers_) > 0:
+
+                            cluster_pair = list(zip(X, cluster.labels_))
+
+                            # Extract elements that best represent clusters
+                            best_representative = list(map(lambda x, i: (i, x[1], [np.linalg.norm(x[0] - center) for center in cluster.cluster_centers_]), cluster_pair, range(len(X))))
+                            best_representative = [(index, cluster_count[cluster], min(values)) for index, cluster, values in best_representative]
+                            best_representative = sorted(best_representative, key=lambda row: (row[2], -row[1]))
+
+                            # Extract exemplars indices
+                            indices = [index for index, size, value in best_representative][:batch]
+
+                        else:
+
+                            # Get random indices sample
+                            indices = random.sample(list(range(batch)), min(batch, counter))
+
+                        selected_examplars = [el for i, el in enumerate(self.exemplars[label]['exemplars']) if i in indices]
+                        selected_tensors = [el for i, el in enumerate(self.exemplars[label]['tensors']) if i in indices]
+                        selected_representations = [el for i, el in enumerate(features) if i in indices]
+
+                    else:
+
+                         # If not new class only select best representations
+                        selected_examplars = self.exemplars[label]['exemplars'][:batch]
+                        selected_tensors = self.exemplars[label]['tensors'][:batch]
+                        selected_representations = features[:batch]
+
                 self.exemplars[label]['exemplars'] = selected_examplars
                 self.exemplars[label]['tensors'] = selected_tensors
                 self.exemplars[label]['representation'] = selected_representations
@@ -805,7 +855,7 @@ class ResNet(nn.Module):
                 preds.append(pred)
 
         return torch.Tensor(preds).to(DEVICE)
-		
+
     def get_most_similar_cos(self, images):
 
         self.eval()
