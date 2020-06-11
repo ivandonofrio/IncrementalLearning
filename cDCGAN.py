@@ -149,9 +149,9 @@ class cDCGAN():
                     num_iter += 1
 
                     targets = torch.zeros(100, total_classes, 1, 1)
-					targets[:, klass] = 1
-					noise = torch.randn(100, 100, 1, 1).to(DEVICE)
-					targets = targets.to(DEVICE)
+                    targets[:, klass] = 1
+                    noise = torch.randn(100, 100, 1, 1).to(DEVICE)
+                    targets = targets.to(DEVICE)
 
                     images = self.gen(noise, targets)
 
@@ -169,27 +169,26 @@ class cDCGAN():
             return examples
 
     def train(self, loader, learned_classes):
-        gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        gen_scheduler = optim.lr_scheduler.MultiStepLR(gen_opt, milestones=[20,40], gamma=0.1)
+        gen_opt = torch.optim.Adam(self.gen.parameters(), lr=0.001, betas=(0.5, 0.999))
+        gen_scheduler = optim.lr_scheduler.MultiStepLR(gen_opt, milestones=[20,30], gamma=0.1)
         
         discr_opt = torch.optim.Adam(self.discr.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        discr_scheduler = optim.lr_scheduler.MultiStepLR(discr_opt, milestones=[20,40], gamma=0.1)
-		
-		tensor = []
+        discr_scheduler = optim.lr_scheduler.MultiStepLR(discr_opt, milestones=[20,30], gamma=0.1)
+        
+        tensor = []
         g_vec = torch.zeros(self.num_classes, self.num_classes)
         for i in range(self.num_classes):
             tensor.append(i)
         g_vec = g_vec.scatter_(1, torch.LongTensor(tensor).view(self.num_classes,1),
                                1).view(self.num_classes, self.num_classes, 1, 1)
-		
-		d_vec = torch.zeros([self.num_classes, self.num_classes, 32, 32])
+        
+        d_vec = torch.zeros([self.num_classes, self.num_classes, 32, 32])
         for i in range(self.num_classes):
-			d_vec[i, i, :, :] = 1
+			      d_vec[i, i, :, :] = 1
 
-        nz = self.num_classes + 100
         print("Start training GAN on classes {}".format(learned_classes))
 
-        for epoch in range(50):
+        for epoch in range(40):
         # for epoch in range(2):
             d_losses_e = []
             g_losses_e = []
@@ -217,7 +216,7 @@ class cDCGAN():
                 discr_opt.zero_grad()
                 ## Train on real images
                 d_labels = d_vec[labels]
-				d_labels = d_labels.to(DEVICE)
+                d_labels = d_labels.to(DEVICE)
 
                 d_output_real = self.discr(images, d_labels).squeeze()
 
@@ -254,9 +253,9 @@ class cDCGAN():
                 d_output = self.discr(g_output, d_random_labels).squeeze()
 
                 g_loss = criterion(d_output, d_like_real)
-				g_loss.backward()
-				gen_opt.step()
-				g_losses_e.append(g_loss.cpu().data.numpy())
+                g_loss.backward()
+                gen_opt.step()
+                g_losses_e.append(g_loss.cpu().data.numpy())
 
             gen_scheduler.step()
             discr_scheduler.step()
