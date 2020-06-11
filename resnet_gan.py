@@ -32,6 +32,7 @@ from .SNNLoss import SNNLoss
 
 # GAN
 from .ACGAN import ACGAN
+from .cDCGAN import cDCGAN
 
 DEVICE = 'cuda'
 
@@ -255,8 +256,9 @@ class ResNet(nn.Module):
         self.k = k
         self.processed_images = 0
 
-		# Initialise GAN
-        self.gan = ACGAN(self.num_classes)           
+		    # Initialise GAN
+        # self.gan = ACGAN(self.num_classes)
+        self.gan = cDCGAN(self.num_classes)
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
@@ -389,7 +391,7 @@ class ResNet(nn.Module):
                 num_synt = max(0, 100 - num_exemplars)
                 print(f'Generating {num_synt} exemplars for {len(self.learned_classes)} classes...')
                 start = time.time()
-                generated = self.gan.generate_examples(num_synt, list(self.learned_classes), save=False, use_discr=True)
+                generated = self.gan.generate_examples(num_synt, list(self.learned_classes), save=False)
                 print(f"Generation took {time.time() - start} seconds!")
                 
                 for label in generated.keys():
