@@ -145,7 +145,7 @@ class ACGAN():
         '''
         Returns a dict[class] of generated samples.
         Just passing in random noise to the generator and storing the results in dict
-        Generates a batch of 100 examples at a time
+        Generates a batch of 10 examples at a time
         num_examples: Total number of examples to generate
         active_classes: List of all classes trained on till now
         save: If True, also save samples of generated images to disk
@@ -164,7 +164,7 @@ class ACGAN():
             num_iter = 0
             for klass in active_classes:
                 while ((not klass in examples.keys()) or (len(examples[klass]) < num_examples)):
-                    print(f'Generating for class {klass}, iteration {num_iter}')
+                    # print(f'Generating for class {klass}, iteration {num_iter}')
                     num_iter += 1
 
                     targets = np.zeros((10, self.num_classes))
@@ -188,7 +188,7 @@ class ACGAN():
                     if not klass in examples.keys():
                         examples[klass] = images.cpu()
                     else:
-                        examples[klass] = torch.cat((examples[klass],images), dim=0).cpu()
+                        examples[klass] = torch.cat((examples[klass],images.cpu()), dim=0)
 
                 # Dont save more than the required number of classes
                 if save:
