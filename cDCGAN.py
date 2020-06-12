@@ -67,6 +67,7 @@ class Discriminator(nn.Module):
         self.use_mbd = use_mbd
         self.mbd_num = mbd_num
         self.mbd_dim = mbd_dim
+        self.d = d
 
         self.conv1_img = nn.Conv2d(c, d//2, 4, 2, 1)
         self.conv1_label = nn.Conv2d(l, d//2, 4, 2, 1)
@@ -90,14 +91,14 @@ class Discriminator(nn.Module):
         x = F.leaky_relu(self.conv3_bn(self.conv3(x)), 0.2)
         if self.use_mbd:
             # Reshape for linear layer
-            x = x.view(-1, 128 * 4 * 4 * 4)
+            x = x.view(-1, self.d * 4 * 4 * 4)
             # Use the linear layer
             mbd = self.mbd(x)
             # Calculate minibatch features and concat them
             x = self.minibatch_discrimination(mbd, x)
             # Make it compatible for convolution layer
             # 520 = 128 * 4 + 8
-            x = x.view(-1, 520, 4, 4)
+            x = x.view(-1, self.d * 4 + 8, 4, 4)
         x = self.conv4(x)
         x = torch.sigmoid(x)
         return x
@@ -122,12 +123,12 @@ class cDCGAN():
         self.gen.init_weights(mean=0.0, std=0.02)
         self.gen = self.gen.to(DEVICE)
 
-        self.discr = Discriminator(l=num_classes)
+        # Enable mini-batch discrimination
+        self.discr = Discriminator(l=num_classes, use_mbd=True)
         self.discr.init_weights(mean=0.0, std=0.02)
         self.discr = self.discr.to(DEVICE)
 
         self.criterion = parameters['CRITERION']()
-        print(self.criterion)
         self.parameters = parameters
 
     def generate_examples(self, num_examples, active_classes, save=False):
@@ -162,22 +163,27 @@ class cDCGAN():
                     else:
                         examples[klass] = torch.cat((examples[klass],images.cpu()), dim=0)
 
-                # Dont save more than the required number of classes
+                # Store images locally
                 if save:
                     for i,img in enumerate(examples[klass]):
                         save_image(img, f'C{klass}img{i}.png')
+                
+                # Trim extra examples
+                examples[klass] = examples[klass][0:num_examples]
 
             self.gen.train()
             return examples
 
-    def train(self, loader, learned_classes):
+    def train(self, loader, learned_classes, model=None):
         gen_params = self.parameters['GEN_PARAMETERS']
+        # Scale learning rate
+        # gen_params['OPTIMIZER_PARAMETERS']['lr'] = gen_params['OPTIMIZER_PARAMETERS']['lr'] * len(learned_classes) / 10
         gen_opt = gen_params['OPTIMIZER'](self.gen.parameters(), **gen_params['OPTIMIZER_PARAMETERS'])
-        gen_scheduler = gen_params['SCHEDULER'](gen_opt, **gen_params['SCHEDULER_PARAMETERS'])
+        # gen_scheduler = gen_params['SCHEDULER'](gen_opt, **gen_params['SCHEDULER_PARAMETERS'])
         
         discr_params = self.parameters['DISCR_PARAMETERS']
         discr_opt = discr_params['OPTIMIZER'](self.discr.parameters(), **discr_params['OPTIMIZER_PARAMETERS'])
-        discr_scheduler = discr_params['SCHEDULER'](discr_opt, **discr_params['SCHEDULER_PARAMETERS'])
+        # discr_scheduler = discr_params['SCHEDULER'](discr_opt, **discr_params['SCHEDULER_PARAMETERS'])
         
         tensor = []
         g_vec = torch.zeros(self.num_classes, self.num_classes)
@@ -195,15 +201,16 @@ class cDCGAN():
         for epoch in range(self.parameters['NUM_EPOCHS']):
             d_losses_e = []
             g_losses_e = []
+            dist_losses_e = []
 
             self.gen.train()
             self.discr.train()
 
-            print("[GAN] Start Epoch {}\tGenerator LR:{}, Discriminator LR:{}".format(
-                epoch + 1,
-                gen_scheduler.get_last_lr(),
-                discr_scheduler.get_last_lr()
-            ))
+            # print("[GAN] Start Epoch {}\tGenerator LR:{}, Discriminator LR:{}".format(
+            #     epoch + 1,
+            #     gen_scheduler.get_last_lr(),
+            #     discr_scheduler.get_last_lr()
+            # ))
 
             start = time.time()
 
@@ -212,7 +219,9 @@ class cDCGAN():
 
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
-                d_like_real = torch.ones(batch_size).to(DEVICE)
+                # d_like_real = torch.ones(batch_size).to(DEVICE)
+                # Label smoothing
+                d_like_real = (torch.ones(batch_size) - 0.1).to(DEVICE)
                 d_like_fake = torch.zeros(batch_size).to(DEVICE)
 
                 ### Train Discriminator ###
@@ -256,18 +265,30 @@ class cDCGAN():
                 d_output = self.discr(g_output, d_random_labels).squeeze()
 
                 g_loss = self.criterion(d_output, d_like_real)
-                g_loss.backward()
+                total_loss = g_loss
+
+                # Lowers euclidean distance between features of generated and real images
+                if model:
+                    model.eval()
+                    output_fake = model(g_output, get_only_features=True)
+                    output_real = model(images, get_only_features=True)
+                    distance_loss = torch.mean(nn.PairwiseDistance(2)(output_fake, output_real))
+                    total_loss = g_loss + distance_loss
+                    dist_losses_e.append(distance_loss.cpu().data.numpy())
+
+                total_loss.backward()
                 gen_opt.step()
                 g_losses_e.append(g_loss.cpu().data.numpy())
 
-            gen_scheduler.step()
-            discr_scheduler.step()
+            # gen_scheduler.step()
+            # discr_scheduler.step()
 
             # Stats
             time_taken = time.time() - start
             mean_g = (sum(g_losses_e)/len(g_losses_e))
             mean_d = (sum(d_losses_e)/len(d_losses_e))
+            mean_dist = (sum(dist_losses_e)/len(dist_losses_e))
 
-            print("[GAN] Epoch: {}, g_loss: {}, d_loss: {}, time taken: {}".format(
-                      epoch + 1, mean_g, mean_d, time_taken
+            print("[GAN] Epoch: {}, g_loss: {}, d_loss: {}, dist_loss: {}, time taken: {}".format(
+                      epoch + 1, mean_g, mean_d, mean_dist, time_taken
                   ))
