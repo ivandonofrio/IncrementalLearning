@@ -370,6 +370,7 @@ class ResNet(nn.Module):
         # List of datasets to concatenate
         datasets_to_concatenate = []
         synt_dataset = []
+        generated = []
 
         # Generate and load training dataset
         datasets_to_concatenate.append(LabelledDataset(train_dataset, transform))
@@ -557,9 +558,9 @@ class ResNet(nn.Module):
             LabelledDataset(synt_dataset)
         ])
         loader = DataLoader(dataset_for_gan, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        self.gan.train(loader, list(self.learned_classes))
+        self.gan.train(loader, list(self.learned_classes), deepcopy(self))
 
-        return epochs_stats, synt_dataset
+        return epochs_stats, generated
 
     def get_fittable_from_exemplars(self, exemplars = None):
         """
