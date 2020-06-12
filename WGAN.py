@@ -9,12 +9,22 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.autograd as autograd
 import torch
+from torch.autograd import Variable
 
 DEVICE = 'cuda'
 
 '''
 Inspired by: https://github.com/haseebs/Pseudo-rehearsal-Incremental-Learning/blob/master/model/cDCGAN.py
 '''
+
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        m.weight.data.normal_(0.0, 0.02)
+        m.bias.data.fill_(0)
+    elif classname.find('BatchNorm') != -1:
+        m.weight.data.normal_(1.0, 0.02)
+        m.bias.data.fill_(0)
 
 def normal_init(m, mean, std, has_bias=True):
     if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
@@ -37,8 +47,8 @@ def compute_gradient_penalty(D, real_samples, fake_samples, syn_label):
     # Get gradient w.r.t. interpolates
     gradients = autograd.grad(
                     outputs=d_interpolates,
-                    inputs=interpolates, 
-                    grad_outputs=fake, 
+                    inputs=interpolates,
+                    grad_outputs=fake,
                     create_graph=True,
                     retain_graph=True,
                     only_inputs=True
@@ -48,7 +58,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples, syn_label):
     return gradient_penalty
 
 class Generator(nn.Module):
-    def __init__(self, norm=False, latent_dim=200, class_dim=100, feat_dim=512, hidden_dim=512):
+    def __init__(self, norm=False, latent_dim=200, class_dim=100, feat_dim=64, hidden_dim=64):
         super(Generator, self).__init__()
         self.latent_dim = latent_dim + class_dim
         self.feat_dim = feat_dim
@@ -71,7 +81,7 @@ class Generator(nn.Module):
         return img
 
 class Discriminator(nn.Module):
-    def __init__(self, feat_dim=512, class_dim=100, hidden_dim=512, condition='projection'):
+    def __init__(self, feat_dim=64, class_dim=100, hidden_dim=64, condition='projection'):
         super(Discriminator, self).__init__()
 
         self.feat_dim = feat_dim
@@ -154,8 +164,8 @@ class WGAN():
 
     def train(self, loader, learned_classes, model):
 
-        gen_params = self.parameters['GENERATOR_PARAMETERS']
-        discr_params = self.parameters['DISCRIMINATOR_PARAMETERS']
+        gen_params = self.parameters['GEN_PARAMETERS']
+        discr_params = self.parameters['DISCR_PARAMETERS']
         opt_gen = gen_params['OPTIMIZER'](self.gen.parameters(), **gen_params['OPTIMIZER_PARAMETERS'])
         opt_discr = discr_params['OPTIMIZER'](self.discr.parameters(), **discr_params['OPTIMIZER_PARAMETERS'])
         sched_gen = gen_params['SCHEDULER'](opt_gen, **gen_params['SCHEDULER_PARAMETERS'])
@@ -164,9 +174,9 @@ class WGAN():
         criterion_softmax = nn.CrossEntropyLoss().to(DEVICE)
         loss_mse = torch.nn.MSELoss(reduction='sum')
 
-        for epoch in parameters['NUM_EPOCHS']:
+        for epoch in range(self.parameters['NUM_EPOCHS']):
             sched_gen.step()
-            discr_gen.step()
+            sched_discr.step()
 
             for i, (images, labels) in enumerate(loader):
                 self.gen.train()
@@ -183,17 +193,17 @@ class WGAN():
                 z = torch.Tensor(np.random.normal(0, 1, (len(labels), 200))).to(DEVICE)
 
                 y_onehot.zero_()
-                y_onehot.scatter_(1, labels[:, None], 1)
+                y_onehot.cuda().scatter_(1, labels[:, None], 1)
                 syn_label = y_onehot.to(DEVICE)
                 fake_feat = self.gen(z, syn_label)
                 fake_validity, _               = self.discr(fake_feat, syn_label)
                 real_validity, disc_real_acgan = self.discr(real_feat, syn_label)
 
                 # Adversarial loss
-                d_loss_rf = torch.mean(fake_validity) - torch.mean(real_validity) 
+                d_loss_rf = torch.mean(fake_validity) - torch.mean(real_validity)
                 gradient_penalty = compute_gradient_penalty(self.discr, real_feat, fake_feat, syn_label).mean()
                 d_loss_lbls = criterion_softmax(disc_real_acgan, labels)
-                d_loss = d_loss_rf + self.parameters['LAMBDA_GRADIENT'] * gradient_penalty 
+                d_loss = d_loss_rf + self.parameters['LAMBDA_GRADIENT'] * gradient_penalty
 
                 d_loss.backward()
                 opt_discr.step()
@@ -205,29 +215,23 @@ class WGAN():
                     opt_gen.zero_grad()
                     fake_feat = self.gen(z, syn_label)
 
-                fake_validity, disc_fake_acgan = self.discr(fake_feat, syn_label)
-                if model.iterations == 0:
-                    loss_aug = 0 * torch.sum(fake_validity)
-                else:
-                    ind = list(range(len(pre_index)))
-                    embed_label_sythesis = []
-                    for _ in range(args.BatchSize):
-                        np.random.shuffle(ind)
-                        embed_label_sythesis.append(pre_index[ind[0]])
+                    fake_validity, disc_fake_acgan = self.discr(fake_feat, syn_label)
+                    if model.iterations == 0:
+                        loss_aug = 0 * torch.sum(fake_validity)
+                    else:
 
+                        embed_label_sythesis = torch.from_numpy(np.random.choice(list(learned_classes), len(labels), replace=True)).cuda()
+                        y_onehot.zero_()
+                        y_onehot.cuda().scatter_(1, embed_label_sythesis[:, None], 1)
+                        syn_label_pre = y_onehot.cuda()
 
-                    embed_label_sythesis = torch.from_numpy(np.random.choice(list(self.learned_classes), len(labels), replace=True))
-                    y_onehot.zero_()
-                    y_onehot.scatter_(1, embed_label_sythesis[:, None], 1)
-                    syn_label_pre = y_onehot.cuda()
+                        pre_feat = self.gen(z, syn_label_pre)
+                        pre_feat_old = self.old_gen(z, syn_label_pre)
+                        loss_aug = loss_mse(pre_feat, pre_feat_old)
 
-                    pre_feat = self.gen(z, syn_label_pre) 
-                    pre_feat_old = self.old_gen(z, syn_label_pre)
-                    loss_aug = loss_mse(pre_feat, pre_feat_old)
+                    g_loss_rf = - torch.mean(fake_validity)
+                    g_loss_lbls = criterion_softmax(disc_fake_acgan, labels.cuda())
+                    g_loss = g_loss_rf + self.parameters['LAMBDA_LWF'] * model.iterations * loss_aug
 
-                g_loss_rf = - torch.mean(fake_validity)
-                g_loss_lbls = criterion_softmax(disc_fake_acgan, labels.cuda())
-                g_loss = g_loss_rf + parameters['LAMDA_LWF'] * model.iterations * loss_aug 
-
-                g_loss.backward()
-                gen_opt.step()
+                    g_loss.backward()
+                    opt_gen.step()
