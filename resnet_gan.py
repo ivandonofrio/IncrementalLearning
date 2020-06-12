@@ -2,6 +2,7 @@ import math
 import time
 import random
 from numpy import linalg as LA
+import numpy as np
 from copy import deepcopy
 
 import time
@@ -33,6 +34,7 @@ from .SNNLoss import SNNLoss
 # GAN
 from .ACGAN import ACGAN
 from .cDCGAN import cDCGAN
+from .WGAN import WGAN
 
 DEVICE = 'cuda'
 
@@ -258,7 +260,7 @@ class ResNet(nn.Module):
 
 		    # Initialise GAN
         # self.gan = ACGAN(self.num_classes)
-        self.gan = cDCGAN(parameters['GAN_PARAMETERS'], self.num_classes)
+        self.gan = WGAN(parameters['GAN_PARAMETERS'], self.num_classes)
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
                         # multiple times without fitting it at each test
@@ -411,6 +413,10 @@ class ResNet(nn.Module):
         print(f'Training on {len(loader.dataset)} images...')
         total_loss = math.nan
 
+        self.gan.old_gen = deepcopy(self.gan.gen)
+        self.gan.old_gen.eval()
+        self.gan.gen.eval()
+
         epochs = range(self.num_epochs) if verbose else tqdm(range(self.num_epochs))
         for epoch in epochs:
             if verbose:
@@ -425,6 +431,7 @@ class ResNet(nn.Module):
 
             for images, labels in loader:
                 images = images.to(DEVICE)
+                labels = labels.to(DEVICE)
 
                 if self.loss == 'bce':
                     target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
@@ -433,6 +440,7 @@ class ResNet(nn.Module):
 				        # Initialise losses for lfc
                 loss1 = torch.zeros(1).to(DEVICE)
                 loss3 = torch.zeros(1).to(DEVICE)
+                loss = torch.zeros(1).to(DEVICE)
 
                 self.train()
 
@@ -452,56 +460,48 @@ class ResNet(nn.Module):
                         output_old = old(images).to(DEVICE)
                         # Get input features according to old network
                         old_features = old(images, get_only_features=True).detach()
-                        if not isinstance(old.fc, CosineLayer):
-                            old_features = F.normalize(old_features)
+                        
+                        loss_aug = torch.dist(cur_features, old_features, 2)
+                        loss += loss_aug * self.iterations
 
-                        if self.loss == 'bce':
-                            if distillation == 'lwf':
-                                # Include old predictions for distillation
-                                target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
-                            elif distillation == 'lfc':
-                                # Try to preserve direction of old features
-                                if not isinstance(self.fc, CosineLayer):
-                                    cur_features = F.normalize(cur_features)
-                                loss1 = nn.CosineEmbeddingLoss()(cur_features, old_features, \
-									                          torch.ones(images.shape[0]).to(DEVICE)) * lmbd
-                                            
-                                # Preserve margin
-                                old_scores = F.normalize(outputs[:,list(self.learned_classes)])
-                                new_scores = F.normalize(outputs[:,list(new_classes)])
-                                outputs_bs = torch.cat((old_scores, new_scores), dim=1)
-                                # print(outputs_bs, outputs_bs.shape)
-                                gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
-                                # print(gt_index)
-                                gt_index = gt_index.scatter(1, labels.to(DEVICE).view(-1,1), 1).ge(0.5)
-                                # print(gt_index)
-                                gt_scores = outputs_bs.masked_select(gt_index)
-                                max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
-                                hard_index = [l in self.learned_classes for l in labels]
-                                if any(hard_index):
-                                    gt_scores = gt_scores[hard_index].view(-1, 1).repeat(1, K)
-                                    max_novel_scores = max_novel_scores[hard_index]
-                                    loss3 = nn.MarginRankingLoss(margin=0.5)(gt_scores.view(-1, 1), \
-                                                  max_novel_scores.view(-1, 1), torch.ones(hard_num*K).to(DEVICE))
-                            else:
-                                raise ValueError("Unknown distillation loss")
-                    
-                        elif self.loss == 'snn':
-                            outputs += output_old
-                            target += target
-
-                        else:
-                          raise ValueError("I'm sorry man, I don't know how to hande this loss with LwF")
-
-                if self.loss == 'snn':
-                    loss = self.criterion(outputs, target, temp=self.snn_temperature)
                 else:
-                    loss = self.criterion(outputs, target)
-                    # lfc + margin rank
-                    loss = loss1 + loss + loss3
+                    loss_cls = nn.CrossEntropyLoss()(outputs, labels)
+                    loss += loss_cls
+
+                if self.iterations > 0:
+                    embed_sythesis = []
+                    embed_label_sythesis = []
+
+                    embed_label_sythesis = torch.from_numpy(np.random.choice(list(self.learned_classes), len(labels), replace=True))
+                    y_onehot = torch.zeros(len(labels), self.num_classes)
+                    y_onehot.scatter_(1, embed_label_sythesis[:, None], 1)
+                    syn_label_pre = y_onehot.to(DEVICE)
+
+                    z = torch.Tensor(np.random.normal(0, 1, (len(labels), 200))).to(DEVICE)
+
+                    embed_sythesis = self.gan.gen(z, syn_label_pre)
+
+                    embed_sythesis = torch.cat((cur_features,embed_sythesis))
+                    embed_label_sythesis = torch.cat((labels,embed_label_sythesis.to(DEVICE)))
+                    soft_feat_syt = self.fc(embed_sythesis)
+
+
+                    batch_size1 = images.shape[0]
+                    batch_size2 = cur_features.shape[0]
+
+                    loss_cls = nn.CrossEntropyLoss()(soft_feat_syt[:batch_size1], embed_label_sythesis[:batch_size1])
+
+                    loss_cls_old = torch.nn.CrossEntropyLoss()(soft_feat_syt[batch_size2:], embed_label_sythesis[batch_size2:])
+
+                    loss_cls += loss_cls_old
+                    loss_cls /= 1 + self.iterations
+                    loss += loss_cls
 
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
+
+                loss.backward()
+                optimizer.step()
 
                 if epoch == 0:
                     with torch.no_grad():
@@ -509,10 +509,6 @@ class ResNet(nn.Module):
                         # Store new classes and images
                         c = [l.item() for l in labels]
                         current_classes.update(c)
-
-                # Compute gradients for each layer and update weights
-                loss.backward()  # backward pass: computes gradients
-                optimizer.step() # update weights based on accumulated gradients
 
             # Store loss
             total_loss = total_loss/total_training
@@ -538,7 +534,6 @@ class ResNet(nn.Module):
         with torch.no_grad():
 
             self.learned_classes.update(current_classes)
-            self.iterations += 1
 
             # Store exemplars
             if self.use_exemplars:
@@ -547,18 +542,22 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-		    # Reload dataloader without augmentation and train GAN
+		# Reload dataloader without augmentation and train GAN
         norm_transform = transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                 ])
         dataset_for_gan = ConcatDataset([
             LabelledDataset(train_dataset, norm_transform),
-            LabelledDataset(exemplars_dataset, norm_transform),
-            LabelledDataset(synt_dataset)
+            LabelledDataset(exemplars_dataset, norm_transform)
         ])
         loader = DataLoader(dataset_for_gan, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        self.gan.train(loader, list(self.learned_classes), deepcopy(self))
+
+        if self.learned_classes != self.num_classes:
+            self.eval()
+            self.gan.train(loader, self.learned_classes, self)
+
+        self.iterations += 1
 
         return epochs_stats, generated
 
