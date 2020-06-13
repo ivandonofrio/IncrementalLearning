@@ -233,3 +233,5 @@ class WGAN():
             print("[GAN] Epoch: {}, g_loss: {}, d_loss: {}, time taken: {}".format(
                   epoch + 1, mean_g, mean_d, time_taken
               ))
+
+        print('Example of generated features:', fake_feat[0])

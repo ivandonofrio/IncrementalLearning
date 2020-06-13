@@ -367,6 +367,8 @@ class ResNet(nn.Module):
         datasets_to_concatenate = []
         synt_dataset = []
         generated = []
+        gen_labels = []
+        gen_features = []
 
         # Generate and load training dataset
         datasets_to_concatenate.append(LabelledDataset(train_dataset, transform))
@@ -383,34 +385,23 @@ class ResNet(nn.Module):
                     exemplars_dataset.append((image, label))
             datasets_to_concatenate.append(LabelledDataset(exemplars_dataset, transform))
 
-            # Get syntethic features
-            '''if self.iterations > 0:
-                num_synt = max(0, 100 - num_exemplars)
-                print(f'Generating {num_synt} exemplars for {len(self.learned_classes)} classes...')
-                start = time.time()
-                generated = self.gan.generate_examples(num_synt, list(self.learned_classes), save=False)
-                print(f"Generation took {time.time() - start} seconds!")
-                
-                for label in generated.keys():
-                    for img in generated[label]:
-                        synt_dataset.append((img, label))
-                
-                datasets_to_concatenate.append(LabelledDataset(synt_dataset))
-            '''
-
             dataset = ConcatDataset(datasets_to_concatenate)
 
             if self.iterations > 0:   
                 # Generate synthetic features
                 num_synt = max(0, 100 - num_exemplars)
                 gen_features, gen_labels = self.gan.generate_examples(num_synt, list(self.learned_classes))
+                # self.eval()
+                # outputs = self.fc(gen_features.to(DEVICE))
+                # _, preds = torch.max(outputs.data, 1)
+                # print('{}% of generated features correctly classified'.format(torch.sum(preds == gen_labels.data).data.item() * 100 / len(gen_labels)))
 
         # Setting up data structures for statistics
         epochs_stats = {}
         last_time = time.time()
 
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        print(f'Training on {len(loader.dataset)} images...')
+        print(f'Training on {len(loader.dataset)} images + {len(gen_labels)} synthetic features...')
         total_loss = math.nan
 
         if self.iterations > 0:
@@ -520,24 +511,14 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-		# Reload dataloader without augmentation and train GAN
-        norm_transform = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ])
-        dataset_for_gan = ConcatDataset([
-            LabelledDataset(train_dataset, norm_transform),
-            LabelledDataset(exemplars_dataset, norm_transform)
-        ])
-        loader = DataLoader(dataset_for_gan, batch_size=self.batch_size, shuffle=True, num_workers=4)
-
-        if self.learned_classes != self.num_classes:
+        if len(self.learned_classes) != self.num_classes:
             self.eval()
             self.gan.train(loader, self.learned_classes, self)
+            print('Example of real features:', cur_features[0])
 
         self.iterations += 1
 
-        return epochs_stats, generated
+        return epochs_stats, (gen_features, gen_labels)
 
     def get_fittable_from_exemplars(self, exemplars = None):
         """
