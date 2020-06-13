@@ -14,8 +14,8 @@ from torch.autograd import Variable
 DEVICE = 'cuda'
 
 '''
-Inspired by: 	https://github.com/xialeiliu/GFR-IL/blob/master/models/resnet.py
-				https://github.com/haseebs/Pseudo-rehearsal-Incremental-Learning/blob/master/model/WGAN.py
+Inspired by:    https://github.com/xialeiliu/GFR-IL/blob/master/models/resnet.py
+                https://github.com/haseebs/Pseudo-rehearsal-Incremental-Learning/blob/master/model/WGAN.py
 '''
 
 def weights_init(m):
@@ -140,8 +140,6 @@ class WGAN():
                     labels = torch.ones(num_examples) * klass
                 else:
                     labels = torch.cat((labels, torch.ones(num_examples) * klass))
-
-            self.gen.train()
             
         return features, labels
 
@@ -158,9 +156,6 @@ class WGAN():
         loss_mse = nn.MSELoss(reduction='sum')
 
         for epoch in range(self.parameters['NUM_EPOCHS']):
-            sched_gen.step()
-            sched_discr.step()
-
             mean_g = 0
             d_losses_e = []
             g_losses_e = []
@@ -226,6 +221,9 @@ class WGAN():
                     g_loss.backward()
                     opt_gen.step()
                     g_losses_e.append(g_loss.cpu().data.numpy())
+            
+            sched_gen.step()
+            sched_discr.step()
 
             # Stats
             time_taken = time.time() - start

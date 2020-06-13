@@ -128,7 +128,7 @@ class LabelledDataset(Dataset):
 
     Arguments:
         data (list of tuples (image, label)): list of labelled images
-        transform: torchvision transformations to apply to input data
+		transform: torchvision transformations to apply to input data
     '''
     def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
@@ -198,7 +198,7 @@ class ResNet(nn.Module):
         :param layers:
         :param parameters:
         :param use_exemplars: bool, store exemplars at the end of an iteration
-        :param last_layer: string, 'cos' or 'std', use a cosine layer or a standard fully connected as last layer
+		:param last_layer: string, 'cos' or 'std', use a cosine layer or a standard fully connected as last layer
         :param num_classes: int, number of initial classes
         """
 
@@ -253,7 +253,7 @@ class ResNet(nn.Module):
         self.k = k
         self.processed_images = 0
 
-        # Initialise GAN
+		# Initialise GAN
         self.gan = WGAN(parameters['GAN_PARAMETERS'], self.num_classes)
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
@@ -297,7 +297,7 @@ class ResNet(nn.Module):
         :param x: An image that you would never recognize
         :param get_only_features: bool, if False returns the output from the last FC layer
             if True returns output from the penultimate layer
-            :param get_also_features: bool, if True returns both
+		    :param get_also_features: bool, if True returns both
         """
         x = self.conv1(x)
         x = self.bn1(x)
@@ -332,7 +332,7 @@ class ResNet(nn.Module):
         :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
-        :param distillation: string, which distillation approach must be used, ['lwf','lfc']
+		:param distillation: string, which distillation approach must be used, ['lwf','lfc']
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
         :param classifier: string, ['fc'] In future 'svm' could be added
@@ -353,7 +353,7 @@ class ResNet(nn.Module):
             for p in old.parameters():
                 p.requires_grad = False
 
-                # Parameters for less forget constraint
+		      	# Parameters for less forget constraint
             if distillation == 'lfc' and self.iterations > 0:
                 lmbd = 5 * ((len(self.learned_classes)/10) ** 0.5)
                 K = 2
@@ -446,31 +446,32 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-                        # Get also input features for cosine
+				        # Get also input features for cosine
                 outputs, cur_features = self.forward(images, get_also_features=True)
 
                 # Compute loss
                 if distillation and self.iterations > 0:
                     # Store network outputs with pre-update parameters
-                    with torch.no_grad():
-                        old.eval()
-                        output_old = old(images).to(DEVICE)
+                    old.eval()
+                    output_old = old(images).to(DEVICE)
 
-                        index = np.random.choice(range(len(gen_labels)), num_gen_per_iter, replace=False)
-                        new_feat = gen_features[index].to(DEVICE)
-                        new_label = gen_labels[index].type(torch.LongTensor).to(DEVICE)
+                    index = np.random.choice(range(len(gen_labels)), num_gen_per_iter, replace=False)
+                    new_feat = gen_features[index].to(DEVICE)
+                    new_label = gen_labels[index].type(torch.LongTensor).to(DEVICE)
 
-                        new_gen = self.fc(new_feat)
-                        old_gen = old.fc(new_feat)
+                    new_gen = self.fc(new_feat)
+                    old_gen = old.fc(new_feat)
 
-                        outputs = Variable(torch.cat((outputs, new_gen), dim=0), requires_grad=True)
-                        output_old = torch.cat((output_old, old_gen), dim=0)
-                        y_onehot = torch.zeros(len(new_label), self.num_classes)
-                        y_onehot.cuda().scatter_(1, new_label[:, None], 1)
-                        target = Variable(torch.cat((target, y_onehot.type(torch.FloatTensor).to(DEVICE))), requires_grad=True)
-                        # target = torch.cat((target, F.one_hot(new_label.to(torch.int64), num_classes=self.num_classes).to(DEVICE, dtype=torch.float)))
+                    # outputs = Variable(torch.cat((outputs, new_gen), dim=0), requires_grad=True)
+                    outputs = torch.cat((outputs, new_gen), dim=0)
+                    output_old = torch.cat((output_old, old_gen), dim=0)
+                    y_onehot = torch.zeros(len(new_label), self.num_classes)
+                    y_onehot.cuda().scatter_(1, new_label[:, None], 1)
+                    # target = Variable(torch.cat((target, y_onehot.type(torch.FloatTensor).to(DEVICE))), requires_grad=True)
+                    target = torch.cat((target, y_onehot.type(torch.FloatTensor).to(DEVICE)))
+                    # target = torch.cat((target, F.one_hot(new_label.to(torch.int64), num_classes=self.num_classes).to(DEVICE, dtype=torch.float)))
 
-                        target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                    target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
 
                 loss = self.criterion(outputs, target)
 
@@ -519,7 +520,7 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-        # Reload dataloader without augmentation and train GAN
+		# Reload dataloader without augmentation and train GAN
         norm_transform = transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -593,7 +594,7 @@ class ResNet(nn.Module):
         :param classifier: string, ['fc', 'ncm', 'cos', 'svm', 'knn', 'rf'], where:
             - fc: last fully connected layer (standard ResNet)
             - ncm: nearest class mean
-            - cos: cosine similarity
+			- cos: cosine similarity
             - svm: SVM
             - knn: k-NN
             - rf: random forest
@@ -644,7 +645,7 @@ class ResNet(nn.Module):
                 elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
-                    
+					
                 elif classifier == 'cos':
                     preds = self.get_most_similar_cos(images)
 
@@ -824,7 +825,7 @@ class ResNet(nn.Module):
                 preds.append(pred)
 
         return torch.Tensor(preds).to(DEVICE)
-        
+		
     def get_most_similar_cos(self, images):
 
         self.eval()
