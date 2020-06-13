@@ -402,7 +402,6 @@ class ResNet(nn.Module):
 
             if self.iterations > 0:   
                 # Generate synthetic features
-                print('num ex', num_exemplars)
                 num_synt = max(0, 100 - num_exemplars)
                 gen_features, gen_labels = self.gan.generate_examples(num_synt, list(self.learned_classes))
 
@@ -415,8 +414,6 @@ class ResNet(nn.Module):
         total_loss = math.nan
 
         if self.iterations > 0:
-            print('loader', len(loader))
-            print('synt', num_synt)
             num_gen_per_iter = (num_synt * len(self.learned_classes)) // len(loader)
             print(f'Take {num_gen_per_iter} features for each iter')
 
@@ -460,7 +457,6 @@ class ResNet(nn.Module):
                         output_old = old(images).to(DEVICE)
 
                         index = np.random.choice(range(len(gen_labels)), num_gen_per_iter, replace=False)
-                        print(f'Take {index}')
                         new_feat = gen_features[index].to(DEVICE)
                         new_label = gen_labels[index].type(torch.LongTensor).to(DEVICE)
 

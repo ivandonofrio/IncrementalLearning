@@ -162,12 +162,12 @@ class WGAN():
             sched_discr.step()
 
             mean_g = 0
+            d_losses_e = []
+            g_losses_e = []
+
             start = time.time()
 
             for i, (images, labels) in enumerate(loader):
-                d_losses_e = []
-                g_losses_e = []
-
                 self.gen.train()
                 self.discr.train()
 
