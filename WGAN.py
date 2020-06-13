@@ -14,7 +14,8 @@ from torch.autograd import Variable
 DEVICE = 'cuda'
 
 '''
-Inspired by: https://github.com/haseebs/Pseudo-rehearsal-Incremental-Learning/blob/master/model/cDCGAN.py
+Inspired by: 	https://github.com/xialeiliu/GFR-IL/blob/master/models/resnet.py
+				https://github.com/haseebs/Pseudo-rehearsal-Incremental-Learning/blob/master/model/WGAN.py
 '''
 
 def weights_init(m):
@@ -23,15 +24,6 @@ def weights_init(m):
         m.weight.data.normal_(0.0, 0.02)
         m.bias.data.fill_(0)
     elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
-
-def normal_init(m, mean, std, has_bias=True):
-    if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
-        m.weight.data.normal_(mean, std)
-        if has_bias:
-            m.bias.data.zero_()
-    elif isinstance(m, nn.BatchNorm2d):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
@@ -113,54 +105,45 @@ class WGAN():
         self.discr = Discriminator(class_dim=num_classes)
         self.discr = self.discr.to(DEVICE)
 
-        self.criterion = parameters['CRITERION']()
         self.num_classes = num_classes
         self.parameters = parameters
 
-    def generate_examples(self, num_examples, active_classes, model=None, save=False):
+    def generate_examples(self, num_examples, active_classes):
         '''
         Returns a dict[class] of generated samples.
         Just passing in random noise to the generator and storing the results in dict
-        Generates a batch of 10 examples at a time
+        Generates a batch of 100 examples at a time
         num_examples: Total number of examples to generate
         active_classes: List of all classes trained on till now
-        save: If True, also save samples of generated images to disk
         '''
         with torch.no_grad():
             self.gen.eval()
             #for param in G.parameters():
             #        param.requires_grad = False
-            num_iter = 0
+            features = []
+            labels = []
 
-            if model:
-                model.eval()
-                examples = {}
-                num_full = 0
-                while num_full < len(active_classes):
-                    noise = torch.randn(100, 100, 1, 1).to(DEVICE)
-                    images = self.gen(noise)
-                    labels = model(images)
+            for klass in active_classes:
+                # One-hot encoding
+                targets = torch.zeros(num_examples, self.num_classes)
+                targets[:, klass] = 1
+                # Random noise
+                z = torch.Tensor(np.random.normal(0, 1, (num_examples, 200))).to(DEVICE)
+                targets = targets.to(DEVICE)
 
-                    for image, label in zip(images,labels):
-                        if not label in examples.keys() or len(examples[label]) < num_examples:
-                            if not label in examples.keys():
-                                examples[label] = []
-                            examples[label] = torch.cat((examples[label], image.cpu()), dim=0)
-                            if len(examples[label]) >= num_examples:
-                                num_full += 1
-                        if num_full >= len(active_classes):
-                            break
-            else:
-                examples = []
-                while len(examples) < num_examples * len(active_classes):
-                    noise = torch.randn(100, 100, 1, 1).to(DEVICE)
-                    images = self.gen(noise)
-                    examples = torch.cat((examples, images.cup()), dim=0)
-
-                examples = examples[:num_examples * len(active_classes)]
+                out = self.gen(z, targets)
+                if len(features) == 0:
+                    features = out.cpu()
+                else:
+                    features = torch.cat((features, out.cpu()))
+                if len(labels) == 0:
+                    labels = torch.ones(num_examples) * klass
+                else:
+                    labels = torch.cat((labels, torch.ones(num_examples) * klass))
 
             self.gen.train()
-        return examples
+            
+        return features, labels
 
     def train(self, loader, learned_classes, model):
 
@@ -172,13 +155,19 @@ class WGAN():
         sched_discr = discr_params['SCHEDULER'](opt_discr, **discr_params['SCHEDULER_PARAMETERS'])
 
         criterion_softmax = nn.CrossEntropyLoss().to(DEVICE)
-        loss_mse = torch.nn.MSELoss(reduction='sum')
+        loss_mse = nn.MSELoss(reduction='sum')
 
         for epoch in range(self.parameters['NUM_EPOCHS']):
             sched_gen.step()
             sched_discr.step()
 
+            mean_g = 0
+            start = time.time()
+
             for i, (images, labels) in enumerate(loader):
+                d_losses_e = []
+                g_losses_e = []
+
                 self.gen.train()
                 self.discr.train()
 
@@ -207,6 +196,7 @@ class WGAN():
 
                 d_loss.backward()
                 opt_discr.step()
+                d_losses_e.append(d_loss.cpu().data.numpy())
 
                 ### Train generator ###
                 if i % self.parameters['DISCR_ITER'] == 0:
@@ -235,3 +225,13 @@ class WGAN():
 
                     g_loss.backward()
                     opt_gen.step()
+                    g_losses_e.append(g_loss.cpu().data.numpy())
+
+            # Stats
+            time_taken = time.time() - start
+            if len(g_losses_e) > 0:
+                mean_g = (sum(g_losses_e)/len(g_losses_e))
+            mean_d = (sum(d_losses_e)/len(d_losses_e))
+            print("[GAN] Epoch: {}, g_loss: {}, d_loss: {}, time taken: {}".format(
+                  epoch + 1, mean_g, mean_d, time_taken
+              ))

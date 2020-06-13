@@ -15,6 +15,7 @@ import torch.utils.model_zoo as model_zoo
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.backends import cudnn
 from itertools import chain
+from torch.autograd import Variable
 
 # Classifiers
 from sklearn.pipeline import make_pipeline
@@ -127,7 +128,7 @@ class LabelledDataset(Dataset):
 
     Arguments:
         data (list of tuples (image, label)): list of labelled images
-		transform: torchvision transformations to apply to input data
+        transform: torchvision transformations to apply to input data
     '''
     def __init__(self, data, transform=None):
         super(LabelledDataset).__init__()
@@ -196,10 +197,8 @@ class ResNet(nn.Module):
         :param block:
         :param layers:
         :param parameters:
-        # :param lwf: bool, enable Learning without Forgetting
         :param use_exemplars: bool, store exemplars at the end of an iteration
-		    :param last_layer: string, 'cos' or 'std', use a cosine layer or a standard fully connected as last layer
-        # :param ncm: bool, enable Nearest Class Mean
+        :param last_layer: string, 'cos' or 'std', use a cosine layer or a standard fully connected as last layer
         :param num_classes: int, number of initial classes
         """
 
@@ -239,9 +238,7 @@ class ResNet(nn.Module):
         self.optimizer = parameters['OPTIMIZER']
         self.optimizer_parameters = parameters['OPTIMIZER_PARAMETERS']
 
-        if loss == 'bce':
-            self.criterion = nn.BCEWithLogitsLoss()
-        elif loss == 'snn':
+        if loss == 'snn':
             self.criterion = SNNLoss()
             self.snn_temperature = parameters['SNN_temperature']
         else:
@@ -250,16 +247,13 @@ class ResNet(nn.Module):
         self.loss = loss
 
         # Set utils structures
-        # self.lwf = lwf
         self.use_exemplars = use_exemplars
-        # self.ncm = ncm
         self.iterations = 0
         self.learned_classes = set()
         self.k = k
         self.processed_images = 0
 
-		    # Initialise GAN
-        # self.gan = ACGAN(self.num_classes)
+        # Initialise GAN
         self.gan = WGAN(parameters['GAN_PARAMETERS'], self.num_classes)
 
         self.clf = {}   # cache classifiers object (SVM, KNN...) to test them
@@ -303,7 +297,7 @@ class ResNet(nn.Module):
         :param x: An image that you would never recognize
         :param get_only_features: bool, if False returns the output from the last FC layer
             if True returns output from the penultimate layer
-		    :param get_also_features: bool, if True returns both
+            :param get_also_features: bool, if True returns both
         """
         x = self.conv1(x)
         x = self.bn1(x)
@@ -338,7 +332,7 @@ class ResNet(nn.Module):
         :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
-		    :param distillation: string, which distillation approach must be used, ['lwf','lfc']
+        :param distillation: string, which distillation approach must be used, ['lwf','lfc']
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
         :param classifier: string, ['fc'] In future 'svm' could be added
@@ -359,7 +353,7 @@ class ResNet(nn.Module):
             for p in old.parameters():
                 p.requires_grad = False
 
-		      	# Parameters for less forget constraint
+                # Parameters for less forget constraint
             if distillation == 'lfc' and self.iterations > 0:
                 lmbd = 5 * ((len(self.learned_classes)/10) ** 0.5)
                 K = 2
@@ -389,8 +383,8 @@ class ResNet(nn.Module):
                     exemplars_dataset.append((image, label))
             datasets_to_concatenate.append(LabelledDataset(exemplars_dataset, transform))
 
-            # Get syntethic images
-            if self.iterations > 0:
+            # Get syntethic features
+            '''if self.iterations > 0:
                 num_synt = max(0, 100 - num_exemplars)
                 print(f'Generating {num_synt} exemplars for {len(self.learned_classes)} classes...')
                 start = time.time()
@@ -402,8 +396,15 @@ class ResNet(nn.Module):
                         synt_dataset.append((img, label))
                 
                 datasets_to_concatenate.append(LabelledDataset(synt_dataset))
+            '''
 
             dataset = ConcatDataset(datasets_to_concatenate)
+
+            if self.iterations > 0:   
+                # Generate synthetic features
+                print('num ex', num_exemplars)
+                num_synt = max(0, 100 - num_exemplars)
+                gen_features, gen_labels = self.gan.generate_examples(num_synt, list(self.learned_classes))
 
         # Setting up data structures for statistics
         epochs_stats = {}
@@ -412,6 +413,12 @@ class ResNet(nn.Module):
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
         print(f'Training on {len(loader.dataset)} images...')
         total_loss = math.nan
+
+        if self.iterations > 0:
+            print('loader', len(loader))
+            print('synt', num_synt)
+            num_gen_per_iter = (num_synt * len(self.learned_classes)) // len(loader)
+            print(f'Take {num_gen_per_iter} features for each iter')
 
         self.gan.old_gen = deepcopy(self.gan.gen)
         self.gan.old_gen.eval()
@@ -433,14 +440,7 @@ class ResNet(nn.Module):
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
 
-                if self.loss == 'bce':
-                    target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
-                else:
-                    target = labels.to(DEVICE)
-				        # Initialise losses for lfc
-                loss1 = torch.zeros(1).to(DEVICE)
-                loss3 = torch.zeros(1).to(DEVICE)
-                loss = torch.zeros(1).to(DEVICE)
+                target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
                 self.train()
 
@@ -449,7 +449,7 @@ class ResNet(nn.Module):
                 optimizer.zero_grad()
 
                 # Forward pass to the network
-				        # Get also input features for cosine
+                        # Get also input features for cosine
                 outputs, cur_features = self.forward(images, get_also_features=True)
 
                 # Compute loss
@@ -458,44 +458,25 @@ class ResNet(nn.Module):
                     with torch.no_grad():
                         old.eval()
                         output_old = old(images).to(DEVICE)
-                        # Get input features according to old network
-                        old_features = old(images, get_only_features=True).detach()
-                        
-                        loss_aug = torch.dist(cur_features, old_features, 2)
-                        loss += loss_aug * self.iterations
 
-                else:
-                    loss_cls = nn.CrossEntropyLoss()(outputs, labels)
-                    loss += loss_cls
+                        index = np.random.choice(range(len(gen_labels)), num_gen_per_iter, replace=False)
+                        print(f'Take {index}')
+                        new_feat = gen_features[index].to(DEVICE)
+                        new_label = gen_labels[index].type(torch.LongTensor).to(DEVICE)
 
-                if self.iterations > 0:
-                    embed_sythesis = []
-                    embed_label_sythesis = []
+                        new_gen = self.fc(new_feat)
+                        old_gen = old.fc(new_feat)
 
-                    embed_label_sythesis = torch.from_numpy(np.random.choice(list(self.learned_classes), len(labels), replace=True))
-                    y_onehot = torch.zeros(len(labels), self.num_classes)
-                    y_onehot.scatter_(1, embed_label_sythesis[:, None], 1)
-                    syn_label_pre = y_onehot.to(DEVICE)
+                        outputs = Variable(torch.cat((outputs, new_gen), dim=0), requires_grad=True)
+                        output_old = torch.cat((output_old, old_gen), dim=0)
+                        y_onehot = torch.zeros(len(new_label), self.num_classes)
+                        y_onehot.cuda().scatter_(1, new_label[:, None], 1)
+                        target = Variable(torch.cat((target, y_onehot.type(torch.FloatTensor).to(DEVICE))), requires_grad=True)
+                        # target = torch.cat((target, F.one_hot(new_label.to(torch.int64), num_classes=self.num_classes).to(DEVICE, dtype=torch.float)))
 
-                    z = torch.Tensor(np.random.normal(0, 1, (len(labels), 200))).to(DEVICE)
+                        target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
 
-                    embed_sythesis = self.gan.gen(z, syn_label_pre)
-
-                    embed_sythesis = torch.cat((cur_features,embed_sythesis))
-                    embed_label_sythesis = torch.cat((labels,embed_label_sythesis.to(DEVICE)))
-                    soft_feat_syt = self.fc(embed_sythesis)
-
-
-                    batch_size1 = images.shape[0]
-                    batch_size2 = cur_features.shape[0]
-
-                    loss_cls = nn.CrossEntropyLoss()(soft_feat_syt[:batch_size1], embed_label_sythesis[:batch_size1])
-
-                    loss_cls_old = torch.nn.CrossEntropyLoss()(soft_feat_syt[batch_size2:], embed_label_sythesis[batch_size2:])
-
-                    loss_cls += loss_cls_old
-                    loss_cls /= 1 + self.iterations
-                    loss += loss_cls
+                loss = self.criterion(outputs, target)
 
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
@@ -542,7 +523,7 @@ class ResNet(nn.Module):
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
 
-		# Reload dataloader without augmentation and train GAN
+        # Reload dataloader without augmentation and train GAN
         norm_transform = transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -616,7 +597,7 @@ class ResNet(nn.Module):
         :param classifier: string, ['fc', 'ncm', 'cos', 'svm', 'knn', 'rf'], where:
             - fc: last fully connected layer (standard ResNet)
             - ncm: nearest class mean
-			- cos: cosine similarity
+            - cos: cosine similarity
             - svm: SVM
             - knn: k-NN
             - rf: random forest
@@ -667,7 +648,7 @@ class ResNet(nn.Module):
                 elif classifier == 'fc':
                     outputs = self.forward(images)
                     _, preds = torch.max(outputs.data, 1)
-					
+                    
                 elif classifier == 'cos':
                     preds = self.get_most_similar_cos(images)
 
@@ -847,7 +828,7 @@ class ResNet(nn.Module):
                 preds.append(pred)
 
         return torch.Tensor(preds).to(DEVICE)
-		
+        
     def get_most_similar_cos(self, images):
 
         self.eval()
