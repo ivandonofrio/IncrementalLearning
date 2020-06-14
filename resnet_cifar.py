@@ -464,7 +464,8 @@ class ResNet(nn.Module):
                           raise ValueError("I'm sorry man, I don't know how to hande this loss with LwF")
 
                 if self.loss == 'snn':
-                    loss = self.criterion(outputs, target, temp=self.snn_temperature)
+                    temperature = math.log10(torch.var(images).item()) if self.snn_temperature == 'variance' else self.snn_temperature
+                    loss = self.criterion(outputs, target, temp = temperature)
                 else:
                     loss = self.criterion(outputs, target)
                     # lfc + margin rank

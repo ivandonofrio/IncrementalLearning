@@ -27,17 +27,13 @@ class SNNLoss(nn.Module):
 
     def forward(self, x, y, temp=0., d=None):  # x 2-D matrix of BxF, y 1-D vector of B
         """
-        :param temp: float or string, float: log10 of the temperature, string: if 'variance' then T = variance of the batch
+        :param temp: float, log10 of the temperature
             e.g. if temp=0 ==> temperature=10^0
         """
         # T = 1/torch.tensor([100.]).to(x.device)
 
         # SE LA TEMPERATURA NON E' SPECIFICATA SETTALA A 0 -> 10^0=1
-        if temp == 'variance':
-            variance = x.std().item() ** 2
-            temp = torch.tensor([float(variance)]).to(x.device)
-        else:
-            temp = torch.tensor([float(temp)]).to(x.device)
+        temp = torch.tensor([float(temp)]).to(x.device)
 
         b = len(y)
 
