@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 import torch.optim as optim
 import torch.utils.model_zoo as model_zoo
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, TensorDataset, BatchSampler, RandomSampler
 from torch.backends import cudnn
 from itertools import chain
 
@@ -28,7 +28,10 @@ from torchvision import transforms
 from tqdm import tqdm, tqdm_gui
 
 # Losses
-from .SNNLoss import SNNLoss
+try:
+    from .SNNLoss import SNNLoss
+except:
+    from utils.SNNLoss import SNNLoss
 
 DEVICE = 'cuda'
 
@@ -295,6 +298,8 @@ class ResNet(nn.Module):
             if True returns output from the penultimate layer
 		    :param get_also_features: bool, if True returns both
         """
+        # print(x.size())
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -318,7 +323,7 @@ class ResNet(nn.Module):
 
     def perform_training(self, train_dataset, val_dataset=None, state_dict=None,
                          verbose=False, validation_step=5, classes_at_time=10, distillation=None,
-                         policy='random', transform=None, classifier='fc', **classifier_kwargs):
+                         policy='random', transform=None, generate_random_exemplars=0, generate_random_exemplars_features=0):
         """
         Train me!
 
@@ -328,10 +333,11 @@ class ResNet(nn.Module):
         :param state dict: should I start from a pre-trained model? Ok, but please do not give me the ImageNet's one or you're a cheater
         :param verbose: bla bla bla
         :param classes_at_time: [not used anymore, but having useless thigs makes you giving more value to the other things]
-		    :param distillation: string, which distillation approach must be used, ['lwf','lfc']
+		:param distillation: string, which distillation approach must be used, ['lwf','lfc']
         :param policy: string, ['random', 'norm']
         :param transform: the transformation to apply to the images of the dataset
-        :param classifier: string, ['fc'] In future 'svm' could be added
+        :param generate_random_exemplars: int, number of random images to generate to add to the exemplars
+        :param generate_random_exemplars: int, number of random features to generate to add to the exemplars
         """
         # Setting up training framework
         torch.cuda.set_device(0)
@@ -359,8 +365,12 @@ class ResNet(nn.Module):
         optimizer = self.optimizer(self.parameters(), **self.optimizer_parameters)
         scheduler = self.scheduler(optimizer, **self.scheduler_parameters)
 
+        # List of datasets to concatenate
+        datasets_to_concatenate = []
+
         # Generate and load training dataset
-        dataset = LabelledDataset(train_dataset, transform)
+        datasets_to_concatenate.append(LabelledDataset(train_dataset, transform))
+
         new_classes = set([x[1] for x in train_dataset])
         if self.use_exemplars:
 
@@ -370,8 +380,53 @@ class ResNet(nn.Module):
             for label in self.exemplars.keys():
                 for image in self.exemplars[label]['exemplars']:
                     exemplars_dataset.append((image, label))
+            datasets_to_concatenate.append(LabelledDataset(exemplars_dataset, transform))
 
-            dataset = ConcatDataset([dataset, LabelledDataset(exemplars_dataset, transform)])
+            # Random pseudoreharsal
+            if generate_random_exemplars > 0 and len(self.learned_classes) > 0:
+                # Generate a random Tensor, transform it to a PIL Image, transform this image applying
+                # the train transformations, do it generate_random_exemplars times
+                random_images = [transforms.ToPILImage()(torch.rand((3, 32, 32))) for _ in range(generate_random_exemplars)]
+                transformed_random_images = list(map(transform, random_images))
+                
+                # Convert list to Tensor
+                transformed_random_images = torch.stack(transformed_random_images).to(DEVICE)
+                
+                # Forward pass images and compute label
+                outputs = self.forward(transformed_random_images)
+                _, preds = torch.max(outputs.data, 1)
+
+                pseudoreharsal_dataset = list(zip(random_images, preds.cpu().detach().numpy()))
+                
+                datasets_to_concatenate.append(LabelledDataset(pseudoreharsal_dataset, transform))
+            
+            # Random pseudorehearsal based on features
+            use_random_pseudorehearsal = False
+            if generate_random_exemplars_features > 0 and len(self.learned_classes) > 0:
+                if len(self.exemplars) == 0:
+                    # TODO: add mean and variance of all the images from one class when network is trained to avoid needing exemplars (that are anyway less precise)
+                    raise ValueError("At the moment, it is possible to use random pseudorehearsal without keeping exemplars")
+                use_random_pseudorehearsal = True
+
+                m = generate_random_exemplars_features // len(self.learned_classes)
+
+                random_features = []
+                for l, exemplars_info in self.exemplars.items():
+                    representations = torch.stack(exemplars_info['representation'])
+                    representations_mean = torch.mean(representations, dim=0)
+                    representations_std = torch.std(representations, dim=0)
+                    class_random_features = [torch.normal(representations_mean, representations_std) for _ in range(m)]
+
+                    random_features += class_random_features
+
+                random_features = torch.stack(random_features).to(DEVICE)
+                outputs = self.fc(random_features)
+                _, preds = torch.max(outputs.data, 1)
+                labels = preds.cpu().detach().numpy()
+
+                pseudoreharsal_dataset = TensorDataset(random_features.cpu(), torch.LongTensor(labels))
+
+            dataset = ConcatDataset(datasets_to_concatenate)
 
         # Setting up data structures for statistics
         epochs_stats = {}
@@ -389,12 +444,24 @@ class ResNet(nn.Module):
                     total_loss,
                     scheduler.get_last_lr()
                 ))
+            
+            if use_random_pseudorehearsal:
+                pseudoreharsal_sampler = RandomSampler(pseudoreharsal_dataset, replacement=False, num_samples=None)
+                pseudoreharsal_list = list(BatchSampler(pseudoreharsal_sampler, batch_size=len(pseudoreharsal_dataset) // len(loader), drop_last=False))
 
             total_loss = 0.0
             total_training = 0
 
-            for images, labels in loader:
+            for i, (images, labels) in enumerate(loader):
                 images = images.to(DEVICE)
+
+                if use_random_pseudorehearsal:
+                    pseudorehearsal_indexes = pseudoreharsal_list[i]
+                    pseudorehearsal_sample = pseudoreharsal_dataset[pseudorehearsal_indexes]
+                    pseudorehearsal_features = pseudorehearsal_sample[0]
+                    pseudorehearsal_labels = pseudorehearsal_sample[1]
+                    
+                    labels = torch.cat([labels, pseudorehearsal_labels])
 
                 if self.loss == 'bce':
                     target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
@@ -413,15 +480,26 @@ class ResNet(nn.Module):
                 # Forward pass to the network
 				        # Get also input features for cosine
                 outputs, cur_features = self.forward(images, get_also_features=True)
+                
+                if use_random_pseudorehearsal:
+                    outputs = torch.cat([outputs, self.fc(pseudorehearsal_features.to(DEVICE))])
+                    cur_features = torch.cat([cur_features, pseudorehearsal_features.to(DEVICE)])
 
                 # Compute loss
                 if distillation and self.iterations > 0:
                     # Store network outputs with pre-update parameters
                     with torch.no_grad():
                         old.eval()
-                        output_old = old(images).to(DEVICE)
+                        output_old, old_features = old(images, get_also_features=True)
                         # Get input features according to old network
-                        old_features = old(images, get_only_features=True).detach()
+                        output_old = output_old.to(DEVICE)
+                        old_features = old_features.detach()
+
+                        if use_random_pseudorehearsal:
+                            output_old_pseudorehearsal = old.fc(pseudorehearsal_features.to(DEVICE))
+                            output_old = torch.cat([output_old, output_old_pseudorehearsal])
+                            old_features = torch.cat([old_features, pseudorehearsal_features.to(DEVICE)])
+
                         if not isinstance(old.fc, CosineLayer):
                             old_features = F.normalize(old_features)
 
@@ -429,6 +507,7 @@ class ResNet(nn.Module):
                             if distillation == 'lwf':
                                 # Include old predictions for distillation
                                 target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
+                                
                             elif distillation == 'lfc':
                                 # Try to preserve direction of old features
                                 if not isinstance(self.fc, CosineLayer):
@@ -440,11 +519,8 @@ class ResNet(nn.Module):
                                 old_scores = F.normalize(outputs[:,list(self.learned_classes)])
                                 new_scores = F.normalize(outputs[:,list(new_classes)])
                                 outputs_bs = torch.cat((old_scores, new_scores), dim=1)
-                                # print(outputs_bs, outputs_bs.shape)
                                 gt_index = torch.zeros(outputs_bs.size()).to(DEVICE)
-                                # print(gt_index)
                                 gt_index = gt_index.scatter(1, labels.to(DEVICE).view(-1,1), 1).ge(0.5)
-                                # print(gt_index)
                                 gt_scores = outputs_bs.masked_select(gt_index)
                                 max_novel_scores = outputs_bs[:, -10:].topk(K, dim=1)[0]
                                 hard_index = [l in self.learned_classes for l in labels]
@@ -486,7 +562,7 @@ class ResNet(nn.Module):
                 optimizer.step() # update weights based on accumulated gradients
 
             # Store loss
-            total_loss = total_loss/total_training
+            total_loss = total_loss / total_training
 
             # Update statistics
             epochs_stats[epoch] = {
