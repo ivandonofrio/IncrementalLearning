@@ -232,6 +232,7 @@ class ResNet(nn.Module):
         # Hyperparameters
         self.num_classes = num_classes
         self.batch_size = parameters['BATCH_SIZE']
+        self.min_exemplars = parameters['MIN_EXEMPLARS']
         self.num_epochs = parameters['NUM_EPOCHS']
         self.scheduler = parameters['SCHEDULER']
         self.scheduler_parameters = parameters['SCHEDULER_PARAMETERS']
@@ -389,8 +390,10 @@ class ResNet(nn.Module):
 
             if self.iterations > 0:   
                 # Generate synthetic features
-                num_synt = max(0, 100 - num_exemplars)
+                num_synt = max(0, self.min_exemplars - num_exemplars)
                 gen_features, gen_labels = self.gan.generate_examples(num_synt, list(self.learned_classes))
+                if num_synt > 0:
+                    print('Example of feature generated in training:', random.choice(gen_features))
                 # self.eval()
                 # outputs = self.fc(gen_features.to(DEVICE))
                 # _, preds = torch.max(outputs.data, 1)
@@ -427,6 +430,7 @@ class ResNet(nn.Module):
             for images, labels in loader:
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
+                loss2 = torch.zeros(1).squeeze().to(DEVICE)
 
                 target = F.one_hot(labels, num_classes=self.num_classes).to(DEVICE, dtype=torch.float)
 
@@ -444,7 +448,7 @@ class ResNet(nn.Module):
                 if distillation and self.iterations > 0:
                     # Store network outputs with pre-update parameters
                     old.eval()
-                    output_old = old(images).to(DEVICE)
+                    output_old, old_features = old(images, get_also_features=True)
 
                     index = np.random.choice(range(len(gen_labels)), num_gen_per_iter, replace=False)
                     new_feat = gen_features[index].to(DEVICE)
@@ -464,7 +468,10 @@ class ResNet(nn.Module):
 
                     target[:,list(self.learned_classes)] = nn.Sigmoid()(output_old[:,list(self.learned_classes)])
 
+                    loss2 = nn.MSELoss()(cur_features, old_features)
+
                 loss = self.criterion(outputs, target)
+                loss += loss2
 
                 total_loss += loss.item() * len(labels)
                 total_training += len(labels)
@@ -506,7 +513,14 @@ class ResNet(nn.Module):
 
             # Store exemplars
             if self.use_exemplars:
-                self.store_exemplars(train_dataset, policy=policy)
+                feat_dict = {}
+                for f, l in zip(gen_features, gen_labels):
+                    if l.item() not in feat_dict:
+                        feat_dict[l.item()] = []
+                    feat_dict[l.item()].append(f)
+                print(feat_dict.keys())
+
+                self.store_exemplars(train_dataset, feat_dict, policy=policy)
 
         # Reset all classifiers: the fitted ones are not valid anymore
         self.clf = {}
@@ -514,7 +528,7 @@ class ResNet(nn.Module):
         if len(self.learned_classes) != self.num_classes:
             self.eval()
             self.gan.train(loader, self.learned_classes, self)
-            print('Example of real features:', cur_features[0])
+            print('Example of real features:', random.choice(cur_features))
 
         self.iterations += 1
 
@@ -647,7 +661,7 @@ class ResNet(nn.Module):
         accuracy = correct_predictions / float(total_predictions)
         return accuracy, prediction_history
 
-    def store_exemplars(self, images, policy='random'):
+    def store_exemplars(self, images, gen_features, policy='random'):
         """
         Select exemplars from the images and recompute all the others
 
@@ -695,7 +709,10 @@ class ResNet(nn.Module):
             for label in self.exemplars.keys():
 
                 # Get current mean and features
-                features, mean = self.get_mean_representation(self.exemplars[label]['tensors'])
+                if len(gen_features.keys()) > 0 and label in gen_features:
+                    features, mean = self.get_mean_representation(self.exemplars[label]['tensors'], gen_features[label])
+                else:
+                    features, mean = self.get_mean_representation(self.exemplars[label]['tensors'])
                 mean /= torch.norm(mean)
 
                 # Store only m exemplars with different policies
@@ -772,7 +789,7 @@ class ResNet(nn.Module):
 
                 counter -= batch
 
-    def get_mean_representation(self, exemplars):
+    def get_mean_representation(self, exemplars, features=None):
         """
         :return: tuple (maps, mean), where:
             - maps: list of representations
@@ -785,8 +802,13 @@ class ResNet(nn.Module):
         with torch.no_grad():
             maps = [self.forward(exemplar.cuda().unsqueeze(0), get_only_features=True).cpu().detach().squeeze() for exemplar in exemplars]
             maps = [map/map.norm() for map in maps]
+            fs = maps
 
-        return maps, torch.stack(maps).mean(0).squeeze()
+            if features:
+                fs = [map/map.norm() for map in features]
+                fs += maps
+
+        return maps, torch.stack(fs).mean(0).squeeze()
 
     def get_nearest_classes(self, images):
         """
